@@ -6,7 +6,6 @@ mod audio;
 mod config;
 mod device;
 mod ipc;
-mod sound;
 mod tray;
 pub mod autostart;
 
@@ -21,7 +20,6 @@ use device::hid::HidBackend;
 use device::protocol::*;
 use device::DeviceEvent;
 use ipc::{IpcClient, IpcMessage, IpcResponse, IpcServer};
-use sound::SoundPlayer;
 use tray::IpcCommand;
 
 #[derive(Parser)]
@@ -83,12 +81,6 @@ fn run_tray_mode() {
         Err(e) => warn!("Audio init error: {}", e),
     }
 
-    // Initialize sound player
-    let sound_player = SoundPlayer::new(&config.sound);
-    if sound_player.is_none() {
-        warn!("Sound player could not be initialized");
-    }
-
     // Channels
     let (device_tx, device_rx) = mpsc::channel::<DeviceEvent>();
     let (ipc_tx, ipc_rx) = mpsc::channel::<IpcCommand>();
@@ -104,7 +96,7 @@ fn run_tray_mode() {
     });
 
     // Run tray on main thread (blocks)
-    tray::run_tray(device_rx, ipc_rx, audio_ctrl, sound_player, config);
+    tray::run_tray(device_rx, ipc_rx, audio_ctrl, config);
 }
 
 const MAX_CONSECUTIVE_ERRORS: u32 = 10;
