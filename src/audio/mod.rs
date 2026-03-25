@@ -38,6 +38,9 @@ pub trait AudioController: Send {
     fn virtual_cable_available(&self) -> bool {
         false
     }
+    /// Stop the boost passthrough thread (on disconnect). Does not reset boost_db.
+    fn stop_boost(&self) {}
+
 }
 
 pub fn create_audio_controller() -> Box<dyn AudioController> {

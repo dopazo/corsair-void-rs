@@ -1,3 +1,7 @@
+// Hide console window when launched from Start Menu / autostart.
+// CLI subcommands still work when run from an existing terminal.
+#![windows_subsystem = "windows"]
+
 mod audio;
 mod config;
 mod device;
@@ -103,6 +107,9 @@ fn run_tray_mode() {
     tray::run_tray(device_rx, ipc_rx, audio_ctrl, sound_player, config);
 }
 
+const MAX_CONSECUTIVE_ERRORS: u32 = 10;
+const NOTIF_REFRESH_INTERVAL_MS: u64 = 5000;
+
 fn hid_polling_loop(tx: mpsc::Sender<DeviceEvent>) {
     loop {
         match HidBackend::open() {
@@ -110,32 +117,48 @@ fn hid_polling_loop(tx: mpsc::Sender<DeviceEvent>) {
                 info!("HID device opened");
                 let _ = tx.send(DeviceEvent::Connected);
 
-                // Initial status request
+                // Get initial status, then switch to notification mode
                 if let Err(e) = device.request_status() {
                     warn!("Failed initial status request: {}", e);
                 }
 
+                let mut consecutive_errors = 0u32;
+                let mut last_notif_request = std::time::Instant::now();
+
                 loop {
+                    // Read with a generous timeout — notifications arrive on state change
                     match device.read_status(POLL_INTERVAL_MS as i32) {
                         Ok(Some(status)) => {
+                            consecutive_errors = 0;
                             let _ = tx.send(DeviceEvent::StatusUpdate(status));
-                            // Request next status
-                            if let Err(e) = device.request_status() {
-                                warn!("Status request failed: {}", e);
-                                break;
-                            }
                         }
                         Ok(None) => {
-                            // Timeout — re-request
-                            if let Err(e) = device.request_status() {
-                                warn!("Status re-request failed: {}", e);
-                                break;
-                            }
+                            // Timeout — no change reported, that's normal
+                            consecutive_errors = 0;
                         }
                         Err(e) => {
                             warn!("HID read error: {}", e);
-                            break;
+                            consecutive_errors += 1;
                         }
+                    }
+
+                    // Periodically re-send notification request to keep the dongle reporting
+                    if last_notif_request.elapsed().as_millis() >= NOTIF_REFRESH_INTERVAL_MS as u128 {
+                        if let Err(e) = device.request_notifications() {
+                            warn!("Notification request failed: {}", e);
+                            consecutive_errors += 1;
+                        } else {
+                            last_notif_request = std::time::Instant::now();
+                        }
+                    }
+
+                    if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
+                        warn!("Too many consecutive HID errors ({}), considering device disconnected", consecutive_errors);
+                        break;
+                    }
+
+                    if consecutive_errors > 0 {
+                        thread::sleep(Duration::from_millis(500));
                     }
                 }
 

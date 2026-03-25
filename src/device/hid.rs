@@ -32,13 +32,24 @@ impl HidBackend {
         Err(DeviceError::NotFound)
     }
 
-    /// Send a status request to the dongle.
+    /// Send a one-shot status request to the dongle.
     pub fn request_status(&self) -> Result<(), DeviceError> {
         let mut buf = [0u8; REPORT_SIZE];
         buf[0] = STATUS_REQUEST_CMD;
         buf[1] = STATUS_REPORT_ID;
         self.device.write(&buf)?;
         debug!("Sent status request");
+        Ok(())
+    }
+
+    /// Ask the dongle to send notifications when status changes.
+    /// This is less aggressive than polling — the device reports only on changes.
+    pub fn request_notifications(&self) -> Result<(), DeviceError> {
+        let mut buf = [0u8; REPORT_SIZE];
+        buf[0] = NOTIF_REQUEST_CMD;
+        buf[1] = STATUS_REPORT_ID;
+        self.device.write(&buf)?;
+        debug!("Sent notification request");
         Ok(())
     }
 

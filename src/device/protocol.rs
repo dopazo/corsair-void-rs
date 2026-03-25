@@ -17,7 +17,6 @@ pub const FIRMWARE_REPORT_ID: u8 = 0x66;
 
 // Command IDs (sent as first byte of output reports)
 pub const STATUS_REQUEST_CMD: u8 = 0xC9;
-#[allow(dead_code)]
 pub const NOTIF_REQUEST_CMD: u8 = 0xCA;
 
 // Status report byte offsets (0-indexed within the report data after report ID)

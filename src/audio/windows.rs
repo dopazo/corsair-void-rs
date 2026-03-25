@@ -101,7 +101,7 @@ impl AudioController for WindowsAudioController {
             Ok(device) => {
                 self.endpoint_volume = Some(Self::activate_volume(&device)?);
                 // Store device for boost engine and detect virtual cable
-                self.boost_engine.set_capture_device(device);
+                self.boost_engine.set_capture_device(&device);
                 self.boost_engine.detect_virtual_cable();
                 Ok(true)
             }
@@ -146,5 +146,9 @@ impl AudioController for WindowsAudioController {
 
     fn virtual_cable_available(&self) -> bool {
         self.boost_engine.virtual_cable_available()
+    }
+
+    fn stop_boost(&self) {
+        self.boost_engine.stop();
     }
 }

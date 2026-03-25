@@ -277,9 +277,7 @@ pub fn run_tray(
                     state.last_mic_up = None;
                     info!("Device disconnected");
                     // Stop boost passthrough (don't reset boost_db so it restarts on reconnect)
-                    if state.boost_db > 0 {
-                        let _ = audio.set_boost_db(0);
-                    }
+                    audio.stop_boost();
                 }
             }
         }
