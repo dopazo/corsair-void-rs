@@ -1,5 +1,7 @@
 #[cfg(windows)]
 pub mod windows;
+#[cfg(windows)]
+mod boost;
 #[cfg(target_os = "linux")]
 pub mod linux;
 
@@ -7,6 +9,7 @@ pub mod linux;
 pub enum AudioError {
     DeviceNotFound,
     ApiError(String),
+    #[allow(dead_code)]
     NotSupported(String),
 }
 
@@ -31,6 +34,10 @@ pub trait AudioController: Send {
     fn set_boost_db(&self, db: u8) -> Result<(), AudioError>;
     /// Get the current dB boost level.
     fn get_boost_db(&self) -> Result<u8, AudioError>;
+    /// Whether a virtual audio cable is available for boost passthrough.
+    fn virtual_cable_available(&self) -> bool {
+        false
+    }
 }
 
 pub fn create_audio_controller() -> Box<dyn AudioController> {

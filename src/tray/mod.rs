@@ -60,7 +60,7 @@ struct MenuItems {
 
 const BOOST_LEVELS: [u8; 3] = [0, 5, 10];
 
-fn build_menu(config: &Config) -> (Menu, MenuItems) {
+fn build_menu(config: &Config, virtual_cable_available: bool) -> (Menu, MenuItems) {
     let title = MenuItem::new("Corsair Void", false, None);
     let battery_item = MenuItem::new("Battery: --", false, None);
     let mic_item = MenuItem::new("Mic: --", false, None);
@@ -73,6 +73,10 @@ fn build_menu(config: &Config) -> (Menu, MenuItems) {
     ];
     for item in &boost_items {
         let _ = boost_submenu.append(item);
+    }
+    if !virtual_cable_available {
+        let _ = boost_submenu.append(&PredefinedMenuItem::separator());
+        let _ = boost_submenu.append(&MenuItem::new("(Requires VB-CABLE)", false, None));
     }
 
     let auto_start_item =
@@ -217,7 +221,7 @@ pub fn run_tray(
     sound_player: Option<SoundPlayer>,
     mut config: Config,
 ) {
-    let (menu, items) = build_menu(&config);
+    let (menu, items) = build_menu(&config, audio.virtual_cable_available());
     let icon = generate_icon(&AppState::default());
 
     let tray_icon = TrayIconBuilder::new()
@@ -255,11 +259,27 @@ pub fn run_tray(
                 DeviceEvent::Connected => {
                     state.device_open = true;
                     info!("Device connected event");
+                    // Re-find audio device and restart boost if needed
+                    match audio.find_device() {
+                        Ok(true) => {
+                            if state.boost_db > 0 {
+                                if let Err(e) = audio.set_boost_db(state.boost_db) {
+                                    warn!("Failed to restart boost after reconnect: {}", e);
+                                }
+                            }
+                        }
+                        Ok(false) => warn!("Audio device not found after reconnect"),
+                        Err(e) => warn!("Audio find_device error after reconnect: {}", e),
+                    }
                 }
                 DeviceEvent::Disconnected => {
                     state.device_open = false;
                     state.last_mic_up = None;
                     info!("Device disconnected");
+                    // Stop boost passthrough (don't reset boost_db so it restarts on reconnect)
+                    if state.boost_db > 0 {
+                        let _ = audio.set_boost_db(0);
+                    }
                 }
             }
         }

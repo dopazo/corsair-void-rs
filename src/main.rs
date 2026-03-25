@@ -66,8 +66,16 @@ fn run_tray_mode() {
     // Initialize audio controller
     let mut audio_ctrl = audio::create_audio_controller();
     match audio_ctrl.find_device() {
-        Ok(true) => info!("Corsair audio capture device found"),
-        Ok(false) => warn!("Corsair audio capture device not found — mute/gain won't work until headset is detected"),
+        Ok(true) => {
+            info!("Corsair audio capture device found");
+            // Apply saved boost level
+            if config.general.mic_boost_db > 0 {
+                if let Err(e) = audio_ctrl.set_boost_db(config.general.mic_boost_db) {
+                    warn!("Failed to apply saved boost: {}", e);
+                }
+            }
+        }
+        Ok(false) => warn!("Corsair audio capture device not found — mute/boost won't work until headset is detected"),
         Err(e) => warn!("Audio init error: {}", e),
     }
 

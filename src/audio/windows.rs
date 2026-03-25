@@ -11,10 +11,12 @@ use windows::Win32::System::Com::{
 };
 use windows::Win32::UI::Shell::PropertiesSystem::IPropertyStore;
 
+use super::boost::BoostEngine;
 use super::{AudioController, AudioError};
 
 pub struct WindowsAudioController {
     endpoint_volume: Option<IAudioEndpointVolume>,
+    boost_engine: BoostEngine,
 }
 
 // SAFETY: IAudioEndpointVolume is COM and we only use it from the thread that
@@ -26,6 +28,7 @@ impl WindowsAudioController {
     pub fn new() -> Self {
         Self {
             endpoint_volume: None,
+            boost_engine: BoostEngine::new(),
         }
     }
 
@@ -97,6 +100,9 @@ impl AudioController for WindowsAudioController {
         match Self::find_corsair_device() {
             Ok(device) => {
                 self.endpoint_volume = Some(Self::activate_volume(&device)?);
+                // Store device for boost engine and detect virtual cable
+                self.boost_engine.set_capture_device(device);
+                self.boost_engine.detect_virtual_cable();
                 Ok(true)
             }
             Err(AudioError::DeviceNotFound) => Ok(false),
@@ -130,17 +136,15 @@ impl AudioController for WindowsAudioController {
         }
     }
 
-    fn set_boost_db(&self, _db: u8) -> Result<(), AudioError> {
-        // Windows endpoint volume for USB headsets maxes at 0 dB.
-        // Real boost requires WASAPI capture + software amplification (TODO).
-        Err(AudioError::NotSupported(
-            "dB boost on Windows requires WASAPI capture (not yet implemented)".into(),
-        ))
+    fn set_boost_db(&self, db: u8) -> Result<(), AudioError> {
+        self.boost_engine.set_boost_db(db)
     }
 
     fn get_boost_db(&self) -> Result<u8, AudioError> {
-        Err(AudioError::NotSupported(
-            "dB boost on Windows requires WASAPI capture (not yet implemented)".into(),
-        ))
+        Ok(self.boost_engine.get_boost_db())
+    }
+
+    fn virtual_cable_available(&self) -> bool {
+        self.boost_engine.virtual_cable_available()
     }
 }
