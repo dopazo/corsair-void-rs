@@ -11,6 +11,8 @@ use crate::config::Config;
 use crate::device::protocol::{BatteryStatus, LOW_BATTERY_THRESHOLD};
 use crate::device::DeviceEvent;
 use crate::ipc::{IpcMessage, IpcResponse, IpcResponder};
+use crate::sound::SoundPlayer;
+
 const ICON_SIZE: u32 = 32;
 
 /// Commands arriving from the IPC thread.
@@ -244,6 +246,7 @@ pub fn run_tray(
     device_rx: Receiver<DeviceEvent>,
     ipc_rx: Receiver<IpcCommand>,
     mut audio: Box<dyn AudioController>,
+    sound_player: Option<SoundPlayer>,
     mut config: Config,
 ) {
     let (menu, items) = build_menu(&config, audio.boost_available());
@@ -278,7 +281,7 @@ pub fn run_tray(
                     state.last_mic_up = Some(status.mic_up);
                     state.battery_percent = status.battery_percent;
                     state.battery_status = status.battery_status;
-                    handle_low_battery(&mut state);
+                    handle_low_battery(&mut state, &sound_player);
                 }
                 DeviceEvent::Connected => {
                     state.device_open = true;
@@ -379,7 +382,7 @@ pub fn run_tray(
     }
 }
 
-fn handle_low_battery(state: &mut AppState) {
+fn handle_low_battery(state: &mut AppState, sound_player: &Option<SoundPlayer>) {
     if state.battery_percent <= LOW_BATTERY_THRESHOLD
         && state.battery_status != BatteryStatus::Charging
         && !state.low_battery_alerted
@@ -389,6 +392,9 @@ fn handle_low_battery(state: &mut AppState) {
             "Low battery alert: {}%",
             state.battery_percent
         );
+        if let Some(player) = sound_player {
+            player.play_low_battery();
+        }
         state.low_battery_alerted = true;
     } else if state.battery_percent > LOW_BATTERY_THRESHOLD
         || state.battery_status == BatteryStatus::Charging
