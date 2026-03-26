@@ -5,7 +5,6 @@ use windows::Win32::Media::Audio::{
     eCapture, IMMDevice, IMMDeviceCollection, IMMDeviceEnumerator, MMDeviceEnumerator,
     DEVICE_STATE_ACTIVE,
 };
-use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CLSCTX_ALL, COINIT_MULTITHREADED, STGM_READ,
 };
@@ -15,7 +14,6 @@ use super::boost::BoostEngine;
 use super::{AudioController, AudioError};
 
 pub struct WindowsAudioController {
-    endpoint_volume: Option<IAudioEndpointVolume>,
     boost_engine: BoostEngine,
 }
 
@@ -27,7 +25,6 @@ unsafe impl Send for WindowsAudioController {}
 impl WindowsAudioController {
     pub fn new() -> Self {
         Self {
-            endpoint_volume: None,
             boost_engine: BoostEngine::new(),
         }
     }
@@ -80,18 +77,6 @@ impl WindowsAudioController {
             Err(AudioError::DeviceNotFound)
         }
     }
-
-    fn activate_volume(device: &IMMDevice) -> Result<IAudioEndpointVolume, AudioError> {
-        unsafe {
-            device
-                .Activate::<IAudioEndpointVolume>(CLSCTX_ALL, None)
-                .map_err(|e| AudioError::ApiError(format!("Activate: {}", e)))
-        }
-    }
-
-    fn volume(&self) -> Result<&IAudioEndpointVolume, AudioError> {
-        self.endpoint_volume.as_ref().ok_or(AudioError::DeviceNotFound)
-    }
 }
 
 impl AudioController for WindowsAudioController {
@@ -99,40 +84,12 @@ impl AudioController for WindowsAudioController {
         Self::ensure_com();
         match Self::find_corsair_device() {
             Ok(device) => {
-                self.endpoint_volume = Some(Self::activate_volume(&device)?);
-                // Store device for boost engine and detect virtual cable
                 self.boost_engine.set_capture_device(&device);
                 self.boost_engine.detect_virtual_cable();
                 Ok(true)
             }
             Err(AudioError::DeviceNotFound) => Ok(false),
             Err(e) => Err(e),
-        }
-    }
-
-    fn mute(&self) -> Result<(), AudioError> {
-        unsafe {
-            self.volume()?
-                .SetMute(true, std::ptr::null())
-                .map_err(|e| AudioError::ApiError(format!("SetMute: {}", e)))
-        }
-    }
-
-    fn unmute(&self) -> Result<(), AudioError> {
-        unsafe {
-            self.volume()?
-                .SetMute(false, std::ptr::null())
-                .map_err(|e| AudioError::ApiError(format!("SetMute: {}", e)))
-        }
-    }
-
-    fn is_muted(&self) -> Result<bool, AudioError> {
-        unsafe {
-            let muted = self
-                .volume()?
-                .GetMute()
-                .map_err(|e| AudioError::ApiError(format!("GetMute: {}", e)))?;
-            Ok(muted.as_bool())
         }
     }
 
@@ -144,7 +101,7 @@ impl AudioController for WindowsAudioController {
         Ok(self.boost_engine.get_boost_db())
     }
 
-    fn virtual_cable_available(&self) -> bool {
+    fn boost_available(&self) -> bool {
         self.boost_engine.virtual_cable_available()
     }
 

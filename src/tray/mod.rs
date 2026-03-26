@@ -8,7 +8,7 @@ use tray_icon::{Icon, TrayIconBuilder};
 
 use crate::audio::AudioController;
 use crate::config::Config;
-use crate::device::protocol::{BatteryStatus, HeadsetStatus, LOW_BATTERY_THRESHOLD};
+use crate::device::protocol::{BatteryStatus, LOW_BATTERY_THRESHOLD};
 use crate::device::DeviceEvent;
 use crate::ipc::{IpcMessage, IpcResponse, IpcResponder};
 const ICON_SIZE: u32 = 32;
@@ -22,22 +22,43 @@ pub struct IpcCommand {
 /// Application state tracked by the tray event loop.
 struct AppState {
     last_mic_up: Option<bool>,
-    mute_override: bool,
     low_battery_alerted: bool,
     battery_percent: u8,
     battery_status: BatteryStatus,
-    /// Whether the USB HID device is open (stable: set by Connected/Disconnected events)
+    /// Whether the USB HID dongle is open
     device_open: bool,
-    /// Whether the headset reports as wirelessly connected (can fluctuate)
+    /// Whether the headset reports as wirelessly connected (can be off/out of range)
     headset_connected: bool,
     boost_db: u8,
+}
+
+/// Subset of AppState fields that affect the tray UI (icon, tooltip, menu text).
+/// Used for change detection to avoid redundant UI updates.
+#[derive(PartialEq)]
+struct UiSnapshot {
+    device_open: bool,
+    headset_connected: bool,
+    last_mic_up: Option<bool>,
+    battery_percent: u8,
+    battery_status: BatteryStatus,
+}
+
+impl AppState {
+    fn ui_snapshot(&self) -> UiSnapshot {
+        UiSnapshot {
+            device_open: self.device_open,
+            headset_connected: self.headset_connected,
+            last_mic_up: self.last_mic_up,
+            battery_percent: self.battery_percent,
+            battery_status: self.battery_status,
+        }
+    }
 }
 
 impl Default for AppState {
     fn default() -> Self {
         Self {
             last_mic_up: None,
-            mute_override: false,
             low_battery_alerted: false,
             battery_percent: 0,
             battery_status: BatteryStatus::Disconnected,
@@ -58,7 +79,7 @@ struct MenuItems {
 
 const BOOST_LEVELS: [u8; 3] = [0, 5, 10];
 
-fn build_menu(config: &Config, virtual_cable_available: bool) -> (Menu, MenuItems) {
+fn build_menu(config: &Config, boost_available: bool) -> (Menu, MenuItems) {
     let title = MenuItem::new("Corsair Void", false, None);
     let battery_item = MenuItem::new("Battery: --", false, None);
     let mic_item = MenuItem::new("Mic: --", false, None);
@@ -72,7 +93,7 @@ fn build_menu(config: &Config, virtual_cable_available: bool) -> (Menu, MenuItem
     for item in &boost_items {
         let _ = boost_submenu.append(item);
     }
-    if !virtual_cable_available {
+    if !boost_available {
         let _ = boost_submenu.append(&PredefinedMenuItem::separator());
         let _ = boost_submenu.append(&MenuItem::new("(Requires VB-CABLE)", false, None));
     }
@@ -120,19 +141,17 @@ fn generate_icon(state: &AppState) -> Icon {
             let idx = ((y * ICON_SIZE + x) * 4) as usize;
 
             if dist <= radius {
-                if state.device_open {
-                    // Teal color for connected
-                    pixels[idx] = 0x00;     // R
-                    pixels[idx + 1] = 0xB4; // G
-                    pixels[idx + 2] = 0xD8; // B
-                    pixels[idx + 3] = 0xFF; // A
+                let (r, g, b) = if state.device_open && state.headset_connected {
+                    (0x00, 0xB4, 0xD8) // Teal: headset connected
+                } else if state.device_open {
+                    (0xE0, 0xA0, 0x20) // Orange: dongle connected, headset off/out of range
                 } else {
-                    // Grey for disconnected
-                    pixels[idx] = 0x80;
-                    pixels[idx + 1] = 0x80;
-                    pixels[idx + 2] = 0x80;
-                    pixels[idx + 3] = 0xFF;
-                }
+                    (0x80, 0x80, 0x80) // Grey: dongle disconnected
+                };
+                pixels[idx] = r;
+                pixels[idx + 1] = g;
+                pixels[idx + 2] = b;
+                pixels[idx + 3] = 0xFF;
             }
         }
     }
@@ -162,8 +181,8 @@ fn generate_icon(state: &AppState) -> Icon {
         }
     }
 
-    // Battery bar at bottom
-    if state.device_open {
+    // Battery bar at bottom (only when headset is wirelessly connected)
+    if state.device_open && state.headset_connected {
         let bar_height = 4u32;
         let bar_y = ICON_SIZE - bar_height - 2;
         let bar_width = ((state.battery_percent as f32 / 100.0) * (ICON_SIZE - 4) as f32) as u32;
@@ -191,7 +210,7 @@ fn generate_icon(state: &AppState) -> Icon {
 }
 
 fn update_menu_text(items: &MenuItems, state: &AppState) {
-    if state.device_open {
+    if state.device_open && state.headset_connected {
         let status_suffix = match state.battery_status {
             BatteryStatus::Charging => " (Charging)",
             BatteryStatus::Low => " (Low)",
@@ -211,7 +230,11 @@ fn update_menu_text(items: &MenuItems, state: &AppState) {
             }
         ));
     } else {
-        items.battery_item.set_text("Battery: --");
+        items.battery_item.set_text(if state.device_open {
+            "Waiting for headset..."
+        } else {
+            "Dongle not connected"
+        });
         items.mic_item.set_text("Mic: --");
     }
 }
@@ -223,7 +246,7 @@ pub fn run_tray(
     mut audio: Box<dyn AudioController>,
     mut config: Config,
 ) {
-    let (menu, items) = build_menu(&config, audio.virtual_cable_available());
+    let (menu, items) = build_menu(&config, audio.boost_available());
     let icon = generate_icon(&AppState::default());
 
     let tray_icon = TrayIconBuilder::new()
@@ -247,15 +270,14 @@ pub fn run_tray(
         pump_win32_messages();
 
         // 2. Process device events — only update state, defer UI update
-        let snapshot_before = (state.device_open, state.last_mic_up, state.battery_percent, state.battery_status);
+        let snapshot_before = state.ui_snapshot();
         while let Ok(event) = device_rx.try_recv() {
             match event {
                 DeviceEvent::StatusUpdate(status) => {
                     state.headset_connected = status.is_connected();
+                    state.last_mic_up = Some(status.mic_up);
                     state.battery_percent = status.battery_percent;
                     state.battery_status = status.battery_status;
-
-                    handle_mic_change(&mut state, &status, &*audio);
                     handle_low_battery(&mut state);
                 }
                 DeviceEvent::Connected => {
@@ -276,6 +298,7 @@ pub fn run_tray(
                 }
                 DeviceEvent::Disconnected => {
                     state.device_open = false;
+                    state.headset_connected = false;
                     state.last_mic_up = None;
                     info!("Device disconnected");
                     // Stop boost passthrough (don't reset boost_db so it restarts on reconnect)
@@ -284,19 +307,19 @@ pub fn run_tray(
             }
         }
         // Update UI once if state changed
-        let snapshot_after = (state.device_open, state.last_mic_up, state.battery_percent, state.battery_status);
+        let snapshot_after = state.ui_snapshot();
         if snapshot_before != snapshot_after {
             update_menu_text(&items, &state);
             let new_icon = generate_icon(&state);
             let _ = tray_icon.set_icon(Some(new_icon));
-            if state.device_open {
-                let _ = tray_icon.set_tooltip(Some(format!(
-                    "Corsair Void - Battery: {}%",
-                    state.battery_percent
-                )));
+            let tooltip = if state.device_open && state.headset_connected {
+                format!("Corsair Void - Battery: {}%", state.battery_percent)
+            } else if state.device_open {
+                "Corsair Void - Waiting for headset".to_string()
             } else {
-                let _ = tray_icon.set_tooltip(Some("Corsair Void - Disconnected"));
-            }
+                "Corsair Void - Disconnected".to_string()
+            };
+            let _ = tray_icon.set_tooltip(Some(tooltip));
         }
 
         // 3. Process IPC commands
@@ -354,41 +377,6 @@ pub fn run_tray(
 
         std::thread::sleep(std::time::Duration::from_millis(16));
     }
-}
-
-fn handle_mic_change(
-    state: &mut AppState,
-    status: &HeadsetStatus,
-    audio: &dyn AudioController,
-) {
-    let mic_up = status.mic_up;
-    if let Some(prev) = state.last_mic_up {
-        if prev != mic_up {
-            if mic_up {
-                // Mic raised → mute (unless user overrode)
-                if !state.mute_override {
-                    if let Err(e) = audio.mute() {
-                        warn!("Failed to mute: {}", e);
-                    }
-                }
-            } else {
-                // Mic lowered → unmute
-                if let Err(e) = audio.unmute() {
-                    warn!("Failed to unmute: {}", e);
-                }
-                state.mute_override = false;
-            }
-        } else if mic_up && !state.mute_override {
-            // Mic is still up — check if user manually unmuted
-            if let Ok(muted) = audio.is_muted() {
-                if !muted {
-                    debug!("User manually unmuted while mic is up — engaging override");
-                    state.mute_override = true;
-                }
-            }
-        }
-    }
-    state.last_mic_up = Some(mic_up);
 }
 
 fn handle_low_battery(state: &mut AppState) {
