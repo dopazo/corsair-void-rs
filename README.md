@@ -24,17 +24,6 @@ Corsair Void wireless headsets (Vendor ID `0x1b1c`):
 | Void Pro Wireless | `0x0a14`, `0x0a16`, `0x0a1a` |
 | Void Elite Wireless | `0x0a51`, `0x0a55`, `0x0a75` |
 
-## Usage
-
-```bash
-corsair-void              # Start tray mode
-corsair-void status       # Show headset status (mic, battery, boost, connection)
-corsair-void boost 5      # Set mic boost to +5 dB (0, 5, or 10)
-corsair-void stop         # Stop the running tray instance
-```
-
-When the tray is running, CLI commands route through IPC. When no instance is running, `status` and `boost` open the HID device directly.
-
 ## Build
 
 ### Windows
@@ -44,6 +33,8 @@ No external C libraries needed. Win32 APIs are accessed via the `windows` crate.
 ```bash
 cargo build --release
 ```
+
+The compiled binary is at `target/release/corsair-void.exe`.
 
 ### Linux
 
@@ -65,6 +56,45 @@ Then build:
 ```bash
 cargo build --release
 ```
+
+The compiled binary is at `target/release/corsair-void` (no `.exe` extension on Linux).
+
+## Usage
+
+### Running the tray app
+
+The app runs as a system tray icon. There are two ways to start it:
+
+**Run the executable directly** (recommended for daily use): double-click `corsair-void.exe` (Windows) or `corsair-void` (Linux) from your file manager. The tray icon appears with no terminal window.
+
+**Run from a terminal:**
+
+```bash
+# Windows
+.\target\release\corsair-void.exe
+
+# Linux
+./target/release/corsair-void
+```
+
+When launched from a terminal, the app runs normally but the terminal window stays open for the lifetime of the tray. On Linux, you can detach it from the terminal:
+
+```bash
+# Run in background, detached from terminal
+nohup ./target/release/corsair-void &disown
+```
+
+For persistent background use, enable **Auto-start** from the tray menu -- this registers the app to start on login without needing a terminal (via Windows Registry or systemd user service).
+
+### CLI commands
+
+```bash
+corsair-void status       # Show headset status (mic, battery, boost, connection)
+corsair-void boost 5      # Set mic boost to +5 dB (0, 5, or 10)
+corsair-void stop         # Stop the running tray instance
+```
+
+When the tray is running, CLI commands route through IPC. When no instance is running, `status` and `boost` open the HID device directly.
 
 ## Platform Notes
 
