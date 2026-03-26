@@ -142,8 +142,13 @@ fn generate_icon(state: &AppState) -> Icon {
         let dot_cx = ICON_SIZE - 6;
         let dot_cy = 6u32;
         let dot_r = 4.0f32;
-        for y in 0..ICON_SIZE {
-            for x in 0..ICON_SIZE {
+        let r_ceil = dot_r.ceil() as u32;
+        let y_start = dot_cy.saturating_sub(r_ceil);
+        let y_end = (dot_cy + r_ceil + 1).min(ICON_SIZE);
+        let x_start = dot_cx.saturating_sub(r_ceil);
+        let x_end = (dot_cx + r_ceil + 1).min(ICON_SIZE);
+        for y in y_start..y_end {
+            for x in x_start..x_end {
                 let dx = x as f32 - dot_cx as f32;
                 let dy = y as f32 - dot_cy as f32;
                 if (dx * dx + dy * dy).sqrt() <= dot_r {
@@ -296,12 +301,13 @@ pub fn run_tray(
 
         // 3. Process IPC commands
         while let Ok(cmd) = ipc_rx.try_recv() {
+            let is_mutation = !matches!(cmd.message, IpcMessage::Status);
             let response = handle_ipc_command(&cmd.message, &mut state, &mut *audio, &mut config);
-            // Update UI after command
-            update_menu_text(&items, &state);
-            // Update boost checkboxes
-            for (i, item) in items.boost_items.iter().enumerate() {
-                item.set_checked(BOOST_LEVELS[i] == state.boost_db);
+            if is_mutation {
+                update_menu_text(&items, &state);
+                for (i, item) in items.boost_items.iter().enumerate() {
+                    item.set_checked(BOOST_LEVELS[i] == state.boost_db);
+                }
             }
             let _ = cmd.responder.send(response);
         }

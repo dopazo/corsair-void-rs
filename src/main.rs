@@ -113,6 +113,9 @@ fn hid_polling_loop(tx: mpsc::Sender<DeviceEvent>) {
                 if let Err(e) = device.request_status() {
                     warn!("Failed initial status request: {}", e);
                 }
+                if let Err(e) = device.request_notifications() {
+                    warn!("Failed initial notification request: {}", e);
+                }
 
                 let mut consecutive_errors = 0u32;
                 let mut last_notif_request = std::time::Instant::now();
@@ -135,7 +138,7 @@ fn hid_polling_loop(tx: mpsc::Sender<DeviceEvent>) {
                     }
 
                     // Periodically re-send notification request to keep the dongle reporting
-                    if last_notif_request.elapsed().as_millis() >= NOTIF_REFRESH_INTERVAL_MS as u128 {
+                    if last_notif_request.elapsed() >= Duration::from_millis(NOTIF_REFRESH_INTERVAL_MS) {
                         if let Err(e) = device.request_notifications() {
                             warn!("Notification request failed: {}", e);
                             consecutive_errors += 1;

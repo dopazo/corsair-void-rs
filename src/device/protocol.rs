@@ -12,8 +12,6 @@ pub const WIRELESS_PRODUCT_IDS: &[u16] = &[
 
 // Report IDs
 pub const STATUS_REPORT_ID: u8 = 0x64;
-#[allow(dead_code)]
-pub const FIRMWARE_REPORT_ID: u8 = 0x66;
 
 // Command IDs (sent as first byte of output reports)
 pub const STATUS_REQUEST_CMD: u8 = 0xC9;

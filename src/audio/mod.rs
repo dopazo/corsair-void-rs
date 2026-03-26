@@ -9,8 +9,6 @@ pub mod linux;
 pub enum AudioError {
     DeviceNotFound,
     ApiError(String),
-    #[allow(dead_code)]
-    NotSupported(String),
 }
 
 impl std::fmt::Display for AudioError {
@@ -18,7 +16,6 @@ impl std::fmt::Display for AudioError {
         match self {
             Self::DeviceNotFound => write!(f, "Corsair Void capture device not found"),
             Self::ApiError(msg) => write!(f, "Audio API error: {}", msg),
-            Self::NotSupported(msg) => write!(f, "Not supported: {}", msg),
         }
     }
 }

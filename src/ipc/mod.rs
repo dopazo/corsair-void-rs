@@ -35,7 +35,7 @@ impl IpcMessage {
             Some(Self::Status)
         } else if trimmed.eq_ignore_ascii_case("STOP") {
             Some(Self::Stop)
-        } else if let Some(rest) = trimmed.strip_prefix("BOOST ").or_else(|| trimmed.strip_prefix("boost ")) {
+        } else if let Some(rest) = trimmed.strip_prefix("BOOST ") {
             rest.trim().parse::<u8>().ok().map(Self::Boost)
         } else {
             None
@@ -336,8 +336,8 @@ mod platform {
     }
 
     impl IpcResponder {
-        pub fn send(&mut self, response: IpcResponse) -> Result<(), std::io::Error> {
-            self.stream.write_all(response.serialize().as_bytes())
+        pub fn send(&self, response: IpcResponse) -> Result<(), std::io::Error> {
+            (&self.stream).write_all(response.serialize().as_bytes())
         }
     }
 

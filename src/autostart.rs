@@ -22,17 +22,6 @@ pub fn set_auto_start(enabled: bool) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-#[cfg(windows)]
-pub fn is_auto_start_enabled() -> bool {
-    use winreg::enums::*;
-    use winreg::RegKey;
-
-    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-    hkcu.open_subkey(r"Software\Microsoft\Windows\CurrentVersion\Run")
-        .and_then(|key| key.get_value::<String, _>("CorsairVoid"))
-        .is_ok()
-}
-
 #[cfg(target_os = "linux")]
 pub fn set_auto_start(enabled: bool) -> Result<(), Box<dyn std::error::Error>> {
     let service_path = dirs::config_dir()
@@ -71,11 +60,3 @@ pub fn set_auto_start(enabled: bool) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
-pub fn is_auto_start_enabled() -> bool {
-    std::process::Command::new("systemctl")
-        .args(["--user", "is-enabled", "corsair-void"])
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}

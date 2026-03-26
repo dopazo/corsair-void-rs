@@ -1,6 +1,6 @@
 use log::{debug, error, info, warn};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
 use windows::core::PCWSTR;
@@ -19,17 +19,11 @@ use windows::Win32::UI::Shell::PropertiesSystem::IPropertyStore;
 
 use super::AudioError;
 
-enum BoostCommand {
-    SetGain(f32),
-}
-
 struct BoostEngineInner {
-    cmd_tx: Option<mpsc::Sender<BoostCommand>>,
     thread_handle: Option<JoinHandle<()>>,
     current_db: u8,
     gain: Arc<AtomicU32>,
     stop: Arc<AtomicBool>,
-    // Store device IDs (strings) instead of COM objects — thread-safe
     capture_device_id: Option<String>,
     render_device_id: Option<String>,
     render_device_name: Option<String>,
@@ -59,7 +53,6 @@ impl BoostEngine {
     pub fn new() -> Self {
         Self {
             inner: Mutex::new(BoostEngineInner {
-                cmd_tx: None,
                 thread_handle: None,
                 current_db: 0,
                 gain: Arc::new(AtomicU32::new(f32::to_bits(1.0))),
@@ -112,12 +105,9 @@ impl BoostEngine {
         inner.gain.store(f32::to_bits(gain_factor), Ordering::SeqCst);
         inner.current_db = db;
 
-        // If thread is already running, just update the gain (0 dB = unity passthrough)
-        if inner.cmd_tx.is_some() {
+        // If thread is already running, the atomic update is sufficient
+        if inner.thread_handle.is_some() {
             debug!("Updating boost gain to +{} dB (factor: {:.3})", db, gain_factor);
-            if let Some(tx) = &inner.cmd_tx {
-                let _ = tx.send(BoostCommand::SetGain(gain_factor));
-            }
             return Ok(());
         }
 
@@ -136,16 +126,14 @@ impl BoostEngine {
 
         // Spawn the boost thread — it does ALL WASAPI init in its own MTA apartment
         info!("Starting boost engine: +{} dB (factor: {:.3})", db, gain_factor);
-        let (cmd_tx, cmd_rx) = mpsc::channel();
         let gain = inner.gain.clone();
         let stop = inner.stop.clone();
         stop.store(false, Ordering::SeqCst);
 
         let handle = thread::spawn(move || {
-            passthrough_thread(capture_id, render_id, gain, stop, cmd_rx);
+            passthrough_thread(capture_id, render_id, gain, stop);
         });
 
-        inner.cmd_tx = Some(cmd_tx);
         inner.thread_handle = Some(handle);
 
         Ok(())
@@ -154,10 +142,9 @@ impl BoostEngine {
     /// Stop the passthrough thread entirely (used on disconnect/exit).
     pub fn stop(&self) {
         let inner = &mut *self.inner.lock().unwrap();
-        if inner.cmd_tx.is_some() {
+        if inner.thread_handle.is_some() {
             info!("Stopping boost engine");
             inner.stop.store(true, Ordering::SeqCst);
-            inner.cmd_tx = None;
             if let Some(handle) = inner.thread_handle.take() {
                 let _ = handle.join();
             }
@@ -228,13 +215,12 @@ fn passthrough_thread(
     render_id: String,
     gain: Arc<AtomicU32>,
     stop: Arc<AtomicBool>,
-    cmd_rx: mpsc::Receiver<BoostCommand>,
 ) {
     unsafe {
         let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
     }
 
-    if let Err(e) = passthrough_thread_inner(&capture_id, &render_id, gain, stop, cmd_rx) {
+    if let Err(e) = passthrough_thread_inner(&capture_id, &render_id, gain, stop) {
         error!("Boost passthrough error: {}", e);
     }
 
@@ -246,7 +232,6 @@ fn passthrough_thread_inner(
     render_id: &str,
     gain: Arc<AtomicU32>,
     stop: Arc<AtomicBool>,
-    cmd_rx: mpsc::Receiver<BoostCommand>,
 ) -> Result<(), AudioError> {
     unsafe {
         // Open devices by ID on this thread
@@ -354,18 +339,6 @@ fn passthrough_thread_inner(
 
         // Main loop
         loop {
-            if stop.load(Ordering::SeqCst) {
-                break;
-            }
-
-            while let Ok(cmd) = cmd_rx.try_recv() {
-                match cmd {
-                    BoostCommand::SetGain(g) => {
-                        debug!("Boost gain updated to {:.3}", g);
-                        gain.store(f32::to_bits(g), Ordering::SeqCst);
-                    }
-                }
-            }
             if stop.load(Ordering::SeqCst) {
                 break;
             }
