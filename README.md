@@ -59,6 +59,16 @@ cargo build --release
 
 The compiled binary is at `target/release/corsair-void` (no `.exe` extension on Linux).
 
+## Install
+
+To install the binary to your Cargo bin directory (usually `~/.cargo/bin`, which should be in your PATH):
+
+```bash
+cargo install --path .
+```
+
+After this, `corsair-void` is available as a command from any terminal.
+
 ## Usage
 
 ### Running the tray app
@@ -126,6 +136,13 @@ Config is stored as TOML:
 [general]
 auto_start = false
 mic_boost_db = 0
+
+[sound]
+enabled = true
+volume = 0.5
+freq_high_hz = 1000
+freq_low_hz = 700
+duration_ms = 150
 ```
 
 ## Architecture
@@ -143,7 +160,8 @@ No async runtime. Uses `std::thread` and `std::sync::mpsc` channels.
 ```
 src/
   main.rs              Entry point, CLI parsing, thread orchestration
-  config.rs            TOML config (auto_start, mic_boost_db)
+  config.rs            TOML config (auto_start, mic_boost_db, sound settings)
+  sound.rs             Low battery alert tone generation via rodio
   autostart.rs         Registry (Windows) / systemd (Linux) auto-start
   audio/
     mod.rs             AudioController trait + platform dispatch

@@ -116,8 +116,8 @@ mod platform {
         FILE_SHARE_NONE, OPEN_EXISTING, PIPE_ACCESS_DUPLEX,
     };
     use windows::Win32::System::Pipes::{
-        ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_READMODE_BYTE,
-        PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
+        ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, WaitNamedPipeW,
+        PIPE_READMODE_BYTE, PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
     };
 
     const PIPE_NAME: &str = r"\\.\pipe\corsair-void";
@@ -223,9 +223,12 @@ mod platform {
     pub struct IpcClient;
 
     impl IpcClient {
-        /// Check if a tray instance is running by trying to connect to the pipe.
+        /// Check if a tray instance is running by probing the named pipe.
         pub fn is_running() -> bool {
-            std::fs::metadata(PIPE_NAME).is_ok()
+            let pipe_name = HSTRING::from(PIPE_NAME);
+            // WaitNamedPipeW checks if the pipe exists without consuming a connection.
+            // Timeout of 0 (or minimal) just tests existence.
+            unsafe { WaitNamedPipeW(&pipe_name, 100).as_bool() }
         }
 
         /// Connect to the running instance and send a message, returning the response.
