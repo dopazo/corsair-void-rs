@@ -109,6 +109,8 @@ fn run_tray_mode() {
 
 const MAX_CONSECUTIVE_ERRORS: u32 = 10;
 const NOTIF_REFRESH_INTERVAL_MS: u64 = 5000;
+const NO_DATA_TIMEOUT_MS: u64 = 30_000;
+const HEALTH_CHECK_TIMEOUT_MS: u64 = 5_000;
 
 fn hid_polling_loop(tx: mpsc::Sender<DeviceEvent>) {
     loop {
@@ -127,17 +129,21 @@ fn hid_polling_loop(tx: mpsc::Sender<DeviceEvent>) {
 
                 let mut consecutive_errors = 0u32;
                 let mut last_notif_request = std::time::Instant::now();
+                let mut last_data_received = std::time::Instant::now();
+                let mut health_check_at: Option<std::time::Instant> = None;
 
                 loop {
-                    // Read with a generous timeout — notifications arrive on state change
                     match device.read_status(POLL_INTERVAL_MS as i32) {
                         Ok(Some(status)) => {
                             consecutive_errors = 0;
+                            last_data_received = std::time::Instant::now();
+                            health_check_at = None;
                             let _ = tx.send(DeviceEvent::StatusUpdate(status));
                         }
                         Ok(None) => {
-                            // Timeout — no change reported, that's normal
-                            consecutive_errors = 0;
+                            // Timeout — no change reported. Don't reset consecutive_errors:
+                            // a stale handle after sleep/hibernation returns timeouts instead
+                            // of errors, which would mask write failures forever.
                         }
                         Err(e) => {
                             warn!("HID read error: {}", e);
@@ -152,6 +158,26 @@ fn hid_polling_loop(tx: mpsc::Sender<DeviceEvent>) {
                             consecutive_errors += 1;
                         } else {
                             last_notif_request = std::time::Instant::now();
+                        }
+                    }
+
+                    // Health check: detect stale handles after sleep/hibernation.
+                    // If no data for a while, send a status request — the dongle should
+                    // always respond. If it doesn't within 5s, the handle is dead.
+                    if health_check_at.is_none()
+                        && last_data_received.elapsed() >= Duration::from_millis(NO_DATA_TIMEOUT_MS)
+                    {
+                        info!("No HID data for {}s, sending health check", NO_DATA_TIMEOUT_MS / 1000);
+                        if let Err(e) = device.request_status() {
+                            warn!("Health check write failed: {}", e);
+                            break;
+                        }
+                        health_check_at = Some(std::time::Instant::now());
+                    }
+                    if let Some(hc) = health_check_at {
+                        if hc.elapsed() >= Duration::from_millis(HEALTH_CHECK_TIMEOUT_MS) {
+                            warn!("No response to health check — device handle is stale (sleep/hibernate?)");
+                            break;
                         }
                     }
 
