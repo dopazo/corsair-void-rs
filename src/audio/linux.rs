@@ -14,7 +14,7 @@ impl LinuxAudioController {
 
 impl AudioController for LinuxAudioController {
     fn find_device(&mut self) -> Result<bool, AudioError> {
-        let (mainloop, context) = Self::connect_pulse()?;
+        let (mut mainloop, context) = Self::connect_pulse()?;
 
         let introspect = context.introspect();
         let found = std::sync::Arc::new(std::sync::Mutex::new(None));
@@ -35,7 +35,7 @@ impl AudioController for LinuxAudioController {
             }
         });
 
-        Self::wait_for_op(&mainloop, &op);
+        Self::wait_for_op(&mut mainloop, &op);
 
         self.device_index = *found.lock().unwrap();
         Ok(self.device_index.is_some())
@@ -43,7 +43,7 @@ impl AudioController for LinuxAudioController {
 
     fn set_boost_db(&self, db: u8) -> Result<(), AudioError> {
         let index = self.device_index.ok_or(AudioError::DeviceNotFound)?;
-        let (mainloop, context) = Self::connect_pulse()?;
+        let (mut mainloop, context) = Self::connect_pulse()?;
         let mut introspect = context.introspect();
 
         // Convert dB boost to PulseAudio volume.
@@ -57,13 +57,13 @@ impl AudioController for LinuxAudioController {
 
         info!("Setting PulseAudio boost: +{} dB (PA volume: {}, factor: {:.2})", db, pa_vol, factor);
         let op = introspect.set_source_volume_by_index(index, &channel_volumes, None);
-        Self::wait_for_op(&mainloop, &op);
+        Self::wait_for_op(&mut mainloop, &op);
         Ok(())
     }
 
     fn get_boost_db(&self) -> Result<u8, AudioError> {
         let index = self.device_index.ok_or(AudioError::DeviceNotFound)?;
-        let (mainloop, context) = Self::connect_pulse()?;
+        let (mut mainloop, context) = Self::connect_pulse()?;
         let introspect = context.introspect();
         let boost = std::sync::Arc::new(std::sync::Mutex::new(0u8));
         let boost_clone = boost.clone();
@@ -82,7 +82,7 @@ impl AudioController for LinuxAudioController {
             }
         });
 
-        Self::wait_for_op(&mainloop, &op);
+        Self::wait_for_op(&mut mainloop, &op);
         Ok(*boost.lock().unwrap())
     }
 
@@ -134,9 +134,9 @@ impl LinuxAudioController {
         Ok((mainloop, context))
     }
 
-    fn wait_for_op(
-        mainloop: &libpulse_binding::mainloop::standard::Mainloop,
-        op: &libpulse_binding::operation::Operation<dyn FnMut(bool)>,
+    fn wait_for_op<F: ?Sized>(
+        mainloop: &mut libpulse_binding::mainloop::standard::Mainloop,
+        op: &libpulse_binding::operation::Operation<F>,
     ) {
         loop {
             match mainloop.iterate(true) {
