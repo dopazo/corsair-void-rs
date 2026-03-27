@@ -37,6 +37,13 @@ Download the latest binary for your platform from [GitHub Releases](https://gith
 
 Place the binary somewhere in your PATH or in a location of your choice and run it.
 
+On **Linux**, make the binary executable first:
+
+```bash
+chmod +x corsair-void-linux-x86_64
+./corsair-void-linux-x86_64
+```
+
 #### Linux runtime dependencies
 
 ```bash
