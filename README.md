@@ -24,9 +24,35 @@ Corsair Void wireless headsets (Vendor ID `0x1b1c`):
 | Void Pro Wireless | `0x0a14`, `0x0a16`, `0x0a1a` |
 | Void Elite Wireless | `0x0a51`, `0x0a55`, `0x0a75` |
 
-## Build
+## Installation
 
-### Windows
+### Pre-built binaries (recommended)
+
+Download the latest binary for your platform from [GitHub Releases](https://github.com/dopazo/corsair-void-rs/releases):
+
+| Platform | Binary | Requirements |
+|---|---|---|
+| Windows | `corsair-void.exe` | None. Optional: [VB-CABLE](https://vb-audio.com/Cable/) for mic boost |
+| Linux | `corsair-void` | Runtime libraries (see below) |
+
+Place the binary somewhere in your PATH or in a location of your choice and run it.
+
+#### Linux runtime dependencies
+
+```bash
+# Debian/Ubuntu
+sudo apt install libhidapi-libusb0 libpulse0
+
+# Arch
+sudo pacman -S hidapi libpulse
+
+# Fedora
+sudo dnf install hidapi pulseaudio-libs
+```
+
+### Build from source
+
+#### Windows
 
 No external C libraries needed. Win32 APIs are accessed via the `windows` crate.
 
@@ -36,7 +62,7 @@ cargo build --release
 
 The compiled binary is at `target/release/corsair-void.exe`.
 
-### Linux
+#### Linux
 
 Install system dependencies first:
 
@@ -59,7 +85,7 @@ cargo build --release
 
 The compiled binary is at `target/release/corsair-void` (no `.exe` extension on Linux).
 
-## Install
+#### Install via Cargo
 
 To install the binary to your Cargo bin directory (usually `~/.cargo/bin`, which should be in your PATH):
 
@@ -80,18 +106,14 @@ The app runs as a system tray icon. There are two ways to start it:
 **Run from a terminal:**
 
 ```bash
-# Windows
-.\target\release\corsair-void.exe
-
-# Linux
-./target/release/corsair-void
+corsair-void
 ```
 
 When launched from a terminal, the app runs normally but the terminal window stays open for the lifetime of the tray. On Linux, you can detach it from the terminal:
 
 ```bash
 # Run in background, detached from terminal
-nohup ./target/release/corsair-void &disown
+nohup corsair-void &disown
 ```
 
 For persistent background use, enable **Auto-start** from the tray menu -- this registers the app to start on login without needing a terminal (via Windows Registry or systemd user service).
