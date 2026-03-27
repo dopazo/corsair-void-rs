@@ -12,24 +12,14 @@ pub struct Config {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct SoundConfig {
-    #[serde(default = "default_true")]
     pub enabled: bool,
-    #[serde(default = "default_volume")]
     pub volume: f32,
-    #[serde(default = "default_freq_high")]
     pub freq_high_hz: u32,
-    #[serde(default = "default_freq_low")]
     pub freq_low_hz: u32,
-    #[serde(default = "default_duration")]
     pub duration_ms: u32,
 }
-
-fn default_true() -> bool { true }
-fn default_volume() -> f32 { 0.5 }
-fn default_freq_high() -> u32 { 1000 }
-fn default_freq_low() -> u32 { 700 }
-fn default_duration() -> u32 { 150 }
 
 impl Default for SoundConfig {
     fn default() -> Self {
