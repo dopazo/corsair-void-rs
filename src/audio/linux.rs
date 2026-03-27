@@ -83,7 +83,8 @@ impl AudioController for LinuxAudioController {
         });
 
         Self::wait_for_op(&mut mainloop, &op);
-        Ok(*boost.lock().unwrap())
+        let result = *boost.lock().unwrap();
+        Ok(result)
     }
 
     fn boost_available(&self) -> bool {
