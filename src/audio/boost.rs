@@ -140,15 +140,33 @@ impl BoostEngine {
     }
 
     /// Stop the passthrough thread entirely (used on disconnect/exit).
+    /// Signals the thread to stop and joins with a timeout to avoid blocking the UI thread.
     pub fn stop(&self) {
-        let inner = &mut *self.inner.lock().unwrap();
-        if inner.thread_handle.is_some() {
+        let handle = {
+            let inner = &mut *self.inner.lock().unwrap();
+            if inner.thread_handle.is_none() {
+                return;
+            }
             info!("Stopping boost engine");
             inner.stop.store(true, Ordering::SeqCst);
-            if let Some(handle) = inner.thread_handle.take() {
-                let _ = handle.join();
+            inner.thread_handle.take()
+        }; // mutex released here
+
+        if let Some(handle) = handle {
+            // Wait up to 500ms for the thread to exit, then abandon it
+            let start = std::time::Instant::now();
+            loop {
+                if handle.is_finished() {
+                    let _ = handle.join();
+                    info!("Boost engine stopped");
+                    return;
+                }
+                if start.elapsed() > std::time::Duration::from_millis(500) {
+                    warn!("Boost engine thread did not stop within 500ms, abandoning");
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
             }
-            info!("Boost engine stopped");
         }
     }
 
