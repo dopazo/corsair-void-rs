@@ -1,57 +1,55 @@
 use log::warn;
-use rodio::{OutputStream, OutputStreamHandle, Sink, buffer::SamplesBuffer};
+use rodio::{OutputStream, Sink, buffer::SamplesBuffer};
+use std::thread;
 
 use crate::config::SoundConfig;
 
 const SAMPLE_RATE: u32 = 44100;
 
 pub struct SoundPlayer {
-    _stream: OutputStream,
-    stream_handle: OutputStreamHandle,
     config: SoundConfig,
 }
 
 impl SoundPlayer {
-    pub fn new(config: &SoundConfig) -> Option<Self> {
-        match OutputStream::try_default() {
-            Ok((stream, handle)) => Some(Self {
-                _stream: stream,
-                stream_handle: handle,
-                config: config.clone(),
-            }),
-            Err(e) => {
-                warn!("Failed to initialize audio output: {}", e);
-                None
-            }
+    pub fn new(config: &SoundConfig) -> Self {
+        Self {
+            config: config.clone(),
         }
     }
 
-    /// Play low battery warning: low → high → low (700 Hz → 1000 Hz → 700 Hz)
+    /// Play low battery warning: low → high → low (700 Hz → 1000 Hz → 700 Hz).
+    /// Runs in a detached thread so the caller (tray main thread) does not block.
+    /// Recreates the OutputStream per call so a changed default device is picked up.
     pub fn play_low_battery(&self) {
         if !self.config.enabled {
             return;
         }
-        let sink = match Sink::try_new(&self.stream_handle) {
-            Ok(s) => s,
-            Err(e) => {
-                warn!("Failed to create audio sink: {}", e);
-                return;
+        let config = self.config.clone();
+        thread::spawn(move || {
+            let (_stream, handle) = match OutputStream::try_default() {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!("Failed to open default audio output: {}", e);
+                    return;
+                }
+            };
+            let sink = match Sink::try_new(&handle) {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!("Failed to create audio sink: {}", e);
+                    return;
+                }
+            };
+            sink.set_volume(config.volume);
+
+            for &freq in &[config.freq_low_hz, config.freq_high_hz, config.freq_low_hz] {
+                let samples = generate_tone(freq as f32, config.duration_ms, SAMPLE_RATE);
+                let buffer = SamplesBuffer::new(1, SAMPLE_RATE, samples);
+                sink.append(buffer);
             }
-        };
 
-        sink.set_volume(self.config.volume);
-
-        for &freq in &[
-            self.config.freq_low_hz,
-            self.config.freq_high_hz,
-            self.config.freq_low_hz,
-        ] {
-            let samples = generate_tone(freq as f32, self.config.duration_ms, SAMPLE_RATE);
-            let buffer = SamplesBuffer::new(1, SAMPLE_RATE, samples);
-            sink.append(buffer);
-        }
-
-        sink.sleep_until_end();
+            sink.sleep_until_end();
+        });
     }
 }
 

@@ -1,5 +1,5 @@
 use log::{debug, info, warn};
-use std::sync::mpsc::Receiver;
+use std::sync::mpsc::{Receiver, SyncSender};
 
 use tray_icon::menu::{
     CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu,
@@ -19,6 +19,9 @@ const ICON_SIZE: u32 = 32;
 pub struct IpcCommand {
     pub message: IpcMessage,
     pub responder: IpcResponder,
+    /// Signaled by the main thread after the response has been written, so the
+    /// IPC server can disconnect the client without racing the response.
+    pub done: SyncSender<()>,
 }
 
 /// Application state tracked by the tray event loop.
@@ -241,12 +244,28 @@ fn update_menu_text(items: &MenuItems, state: &AppState) {
     }
 }
 
+/// Re-find the audio capture device and (re-)apply boost passthrough if active.
+/// Used both when the dongle is first opened and when the headset reconnects wirelessly.
+fn refresh_audio(audio: &mut dyn AudioController, boost_db: u8) {
+    match audio.find_device() {
+        Ok(true) => {
+            if boost_db > 0 {
+                if let Err(e) = audio.set_boost_db(boost_db) {
+                    warn!("Failed to (re)start boost: {}", e);
+                }
+            }
+        }
+        Ok(false) => warn!("Audio capture device not found"),
+        Err(e) => warn!("Audio find_device error: {}", e),
+    }
+}
+
 /// Run the tray event loop on the main thread.
 pub fn run_tray(
     device_rx: Receiver<DeviceEvent>,
     ipc_rx: Receiver<IpcCommand>,
     mut audio: Box<dyn AudioController>,
-    sound_player: Option<SoundPlayer>,
+    sound_player: SoundPlayer,
     mut config: Config,
 ) {
     let (menu, items) = build_menu(&config, audio.boost_available());
@@ -286,18 +305,7 @@ pub fn run_tray(
                 DeviceEvent::Connected => {
                     state.device_open = true;
                     info!("Device connected event");
-                    // Re-find audio device and restart boost if needed
-                    match audio.find_device() {
-                        Ok(true) => {
-                            if state.boost_db > 0 {
-                                if let Err(e) = audio.set_boost_db(state.boost_db) {
-                                    warn!("Failed to restart boost after reconnect: {}", e);
-                                }
-                            }
-                        }
-                        Ok(false) => warn!("Audio device not found after reconnect"),
-                        Err(e) => warn!("Audio find_device error after reconnect: {}", e),
-                    }
+                    refresh_audio(&mut *audio, state.boost_db);
                 }
                 DeviceEvent::Disconnected => {
                     state.device_open = false;
@@ -309,6 +317,23 @@ pub fn run_tray(
                 }
             }
         }
+
+        // React to wireless connection transitions (headset on/off while dongle stays
+        // plugged in). DeviceEvent::Connected/Disconnected only fires for the USB dongle,
+        // not for the wireless link, so we drive boost lifecycle off headset_connected.
+        if state.headset_connected != snapshot_before.headset_connected {
+            if state.headset_connected {
+                info!("Headset wirelessly reconnected, refreshing audio");
+                // Tear down any stale passthrough thread bound to the old (invalidated)
+                // capture endpoint before re-finding and restarting.
+                audio.stop_boost();
+                refresh_audio(&mut *audio, state.boost_db);
+            } else {
+                info!("Headset wirelessly disconnected, stopping boost");
+                audio.stop_boost();
+            }
+        }
+
         // Update UI once if state changed
         let snapshot_after = state.ui_snapshot();
         if snapshot_before != snapshot_after {
@@ -336,6 +361,7 @@ pub fn run_tray(
                 }
             }
             let _ = cmd.responder.send(response);
+            let _ = cmd.done.send(());
         }
 
         // 4. Process menu events
@@ -382,19 +408,26 @@ pub fn run_tray(
     }
 }
 
-fn handle_low_battery(state: &mut AppState, sound_player: &Option<SoundPlayer>) {
+fn handle_low_battery(state: &mut AppState, sound_player: &SoundPlayer) {
+    // Only meaningful when the headset is wirelessly connected — otherwise the
+    // dongle reports battery=0 with status=Disconnected, which would otherwise
+    // trigger a false low-battery alarm every time the user powers off the headset.
+    if !state.headset_connected || state.battery_status == BatteryStatus::Disconnected {
+        // Reset on disconnect so reconnecting with a genuinely low battery
+        // alarms again once.
+        state.low_battery_alerted = false;
+        return;
+    }
+
     if state.battery_percent <= LOW_BATTERY_THRESHOLD
         && state.battery_status != BatteryStatus::Charging
         && !state.low_battery_alerted
-        && state.device_open
     {
         info!(
             "Low battery alert: {}%",
             state.battery_percent
         );
-        if let Some(player) = sound_player {
-            player.play_low_battery();
-        }
+        sound_player.play_low_battery();
         state.low_battery_alerted = true;
     } else if state.battery_percent > LOW_BATTERY_THRESHOLD
         || state.battery_status == BatteryStatus::Charging

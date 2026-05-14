@@ -85,9 +85,6 @@ fn run_tray_mode() {
 
     // Initialize sound player
     let sound_player = SoundPlayer::new(&config.sound);
-    if sound_player.is_none() {
-        warn!("Sound player could not be initialized");
-    }
 
     // Channels
     let (device_tx, device_rx) = mpsc::channel::<DeviceEvent>();
@@ -151,13 +148,14 @@ fn hid_polling_loop(tx: mpsc::Sender<DeviceEvent>) {
                         }
                     }
 
-                    // Periodically re-send notification request to keep the dongle reporting
+                    // Periodically re-send notification request to keep the dongle reporting.
+                    // Always advance the timestamp so a failing write doesn't busy-loop;
+                    // consecutive_errors will trip the disconnect threshold if it keeps failing.
                     if last_notif_request.elapsed() >= Duration::from_millis(NOTIF_REFRESH_INTERVAL_MS) {
+                        last_notif_request = std::time::Instant::now();
                         if let Err(e) = device.request_notifications() {
                             warn!("Notification request failed: {}", e);
                             consecutive_errors += 1;
-                        } else {
-                            last_notif_request = std::time::Instant::now();
                         }
                     }
 
@@ -202,6 +200,8 @@ fn hid_polling_loop(tx: mpsc::Sender<DeviceEvent>) {
     }
 }
 
+const IPC_RESPONSE_TIMEOUT_MS: u64 = 2000;
+
 fn ipc_server_loop(tx: mpsc::Sender<IpcCommand>) {
     let server = match IpcServer::bind() {
         Ok(s) => s,
@@ -215,12 +215,15 @@ fn ipc_server_loop(tx: mpsc::Sender<IpcCommand>) {
         match server.accept() {
             Ok((message, responder)) => {
                 info!("IPC command received: {:?}", message);
+                let (done_tx, done_rx) = mpsc::sync_channel::<()>(1);
                 let _ = tx.send(IpcCommand {
                     message,
                     responder,
+                    done: done_tx,
                 });
-                // Wait briefly for the main thread to process and respond
-                thread::sleep(Duration::from_millis(100));
+                // Wait until the main thread signals it has written the response,
+                // or bail out after a generous timeout if it never does.
+                let _ = done_rx.recv_timeout(Duration::from_millis(IPC_RESPONSE_TIMEOUT_MS));
                 server.disconnect_client();
             }
             Err(e) => {
