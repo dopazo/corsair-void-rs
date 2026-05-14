@@ -51,9 +51,6 @@ pub const USAGE_PAGE: u16 = 0xffc5;
 // Polling interval in milliseconds
 pub const POLL_INTERVAL_MS: u64 = 100;
 
-// Reconnection retry interval in milliseconds
-pub const RECONNECT_INTERVAL_MS: u64 = 2000;
-
 // HID report packet size
 pub const REPORT_SIZE: usize = 12;
 

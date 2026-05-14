@@ -89,10 +89,14 @@ fn run_tray_mode() {
     // Channels
     let (device_tx, device_rx) = mpsc::channel::<DeviceEvent>();
     let (ipc_tx, ipc_rx) = mpsc::channel::<IpcCommand>();
+    let (hotplug_tx, hotplug_rx) = mpsc::channel::<()>();
+
+    // OS hotplug watcher (Windows: WM_DEVICECHANGE; no-op elsewhere)
+    device::hotplug::spawn(hotplug_tx);
 
     // Spawn HID polling thread
     thread::spawn(move || {
-        hid_polling_loop(device_tx);
+        hid_polling_loop(device_tx, hotplug_rx);
     });
 
     // Spawn IPC server thread
@@ -108,9 +112,16 @@ const MAX_CONSECUTIVE_ERRORS: u32 = 10;
 const NOTIF_REFRESH_INTERVAL_MS: u64 = 5000;
 const NO_DATA_TIMEOUT_MS: u64 = 30_000;
 const HEALTH_CHECK_TIMEOUT_MS: u64 = 5_000;
+/// Fallback wait while the dongle is missing. Normally we are woken up sooner
+/// by an OS hotplug event; this is just a safety net in case the event misses.
+const HOTPLUG_FALLBACK_TIMEOUT_MS: u64 = 5_000;
 
-fn hid_polling_loop(tx: mpsc::Sender<DeviceEvent>) {
+fn hid_polling_loop(tx: mpsc::Sender<DeviceEvent>, hotplug_rx: mpsc::Receiver<()>) {
     loop {
+        // Drain any stale hotplug events buffered while we were busy reading the
+        // device; we only care about events that arrive while we're waiting.
+        while hotplug_rx.try_recv().is_ok() {}
+
         match HidBackend::open() {
             Ok(device) => {
                 info!("HID device opened");
@@ -192,11 +203,15 @@ fn hid_polling_loop(tx: mpsc::Sender<DeviceEvent>) {
                 let _ = tx.send(DeviceEvent::Disconnected);
             }
             Err(_) => {
-                // Device not found, wait and retry
+                // Device not found; fall through to the hotplug wait below.
             }
         }
 
-        thread::sleep(Duration::from_millis(RECONNECT_INTERVAL_MS));
+        // Wait for either an OS hotplug event or the fallback timeout.
+        // recv_timeout returns Ok(()) on a hotplug signal, Err(Timeout) on the
+        // fallback, or Err(Disconnected) if the watcher channel was closed —
+        // in any case we just loop and try opening again.
+        let _ = hotplug_rx.recv_timeout(Duration::from_millis(HOTPLUG_FALLBACK_TIMEOUT_MS));
     }
 }
 

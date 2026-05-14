@@ -1,5 +1,6 @@
 pub mod protocol;
 pub mod hid;
+pub mod hotplug;
 #[cfg(target_os = "linux")]
 pub mod sysfs;
 
