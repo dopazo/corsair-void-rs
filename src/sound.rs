@@ -1,5 +1,5 @@
 use log::warn;
-use rodio::{OutputStream, Sink, buffer::SamplesBuffer};
+use rodio::{buffer::SamplesBuffer, OutputStream, Sink};
 use std::thread;
 
 use crate::config::SoundConfig;

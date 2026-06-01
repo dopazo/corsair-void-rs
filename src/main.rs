@@ -3,12 +3,12 @@
 #![windows_subsystem = "windows"]
 
 mod audio;
+pub mod autostart;
 mod config;
 mod device;
 mod ipc;
 mod sound;
 mod tray;
-pub mod autostart;
 
 use clap::{Parser, Subcommand};
 use log::{error, info, warn};
@@ -17,7 +17,6 @@ use std::thread;
 use std::time::Duration;
 
 use config::Config;
-use device::hid::HidBackend;
 use device::protocol::*;
 use device::DeviceEvent;
 use ipc::{IpcClient, IpcMessage, IpcResponse, IpcServer};
@@ -45,7 +44,9 @@ enum Command {
 }
 
 fn parse_boost_db(s: &str) -> Result<u8, String> {
-    let val: u8 = s.parse().map_err(|_| format!("'{}' is not a valid number", s))?;
+    let val: u8 = s
+        .parse()
+        .map_err(|_| format!("'{}' is not a valid number", s))?;
     match val {
         0 | 5 | 10 => Ok(val),
         _ => Err("boost must be 0, 5, or 10 dB".to_string()),
@@ -122,8 +123,8 @@ fn hid_polling_loop(tx: mpsc::Sender<DeviceEvent>, hotplug_rx: mpsc::Receiver<()
         // device; we only care about events that arrive while we're waiting.
         while hotplug_rx.try_recv().is_ok() {}
 
-        match HidBackend::open() {
-            Ok(device) => {
+        match device::open_device_backend() {
+            Ok(mut device) => {
                 info!("HID device opened");
                 let _ = tx.send(DeviceEvent::Connected);
 
@@ -162,7 +163,9 @@ fn hid_polling_loop(tx: mpsc::Sender<DeviceEvent>, hotplug_rx: mpsc::Receiver<()
                     // Periodically re-send notification request to keep the dongle reporting.
                     // Always advance the timestamp so a failing write doesn't busy-loop;
                     // consecutive_errors will trip the disconnect threshold if it keeps failing.
-                    if last_notif_request.elapsed() >= Duration::from_millis(NOTIF_REFRESH_INTERVAL_MS) {
+                    if last_notif_request.elapsed()
+                        >= Duration::from_millis(NOTIF_REFRESH_INTERVAL_MS)
+                    {
                         last_notif_request = std::time::Instant::now();
                         if let Err(e) = device.request_notifications() {
                             warn!("Notification request failed: {}", e);
@@ -173,10 +176,16 @@ fn hid_polling_loop(tx: mpsc::Sender<DeviceEvent>, hotplug_rx: mpsc::Receiver<()
                     // Health check: detect stale handles after sleep/hibernation.
                     // If no data for a while, send a status request — the dongle should
                     // always respond. If it doesn't within 5s, the handle is dead.
-                    if health_check_at.is_none()
+                    // Only push-based backends (HID) need this; on-demand backends
+                    // (sysfs) never go stale and would false-trigger it while idle.
+                    if device.needs_health_check()
+                        && health_check_at.is_none()
                         && last_data_received.elapsed() >= Duration::from_millis(NO_DATA_TIMEOUT_MS)
                     {
-                        info!("No HID data for {}s, sending health check", NO_DATA_TIMEOUT_MS / 1000);
+                        info!(
+                            "No HID data for {}s, sending health check",
+                            NO_DATA_TIMEOUT_MS / 1000
+                        );
                         if let Err(e) = device.request_status() {
                             warn!("Health check write failed: {}", e);
                             break;
@@ -191,7 +200,10 @@ fn hid_polling_loop(tx: mpsc::Sender<DeviceEvent>, hotplug_rx: mpsc::Receiver<()
                     }
 
                     if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
-                        warn!("Too many consecutive HID errors ({}), considering device disconnected", consecutive_errors);
+                        warn!(
+                            "Too many consecutive HID errors ({}), considering device disconnected",
+                            consecutive_errors
+                        );
                         break;
                     }
 
@@ -272,8 +284,8 @@ fn run_cli(command: Command) {
     // No tray running — direct mode
     match command {
         Command::Status => {
-            match HidBackend::open() {
-                Ok(device) => {
+            match device::open_device_backend() {
+                Ok(mut device) => {
                     if let Err(e) = device.request_status() {
                         error!("Failed to request status: {}", e);
                         std::process::exit(1);
@@ -282,9 +294,16 @@ fn run_cli(command: Command) {
                         Ok(Some(status)) => {
                             println!(
                                 "Mic: {}",
-                                if status.mic_up { "Muted (UP)" } else { "Active (DOWN)" }
+                                if status.mic_up {
+                                    "Muted (UP)"
+                                } else {
+                                    "Active (DOWN)"
+                                }
                             );
-                            println!("Battery: {}% ({})", status.battery_percent, status.battery_status);
+                            println!(
+                                "Battery: {}% ({})",
+                                status.battery_percent, status.battery_status
+                            );
                             println!("Connection: {}", status.connection);
                             // Try to get boost from audio controller
                             let mut audio = audio::create_audio_controller();
@@ -349,22 +368,28 @@ fn print_response(command: &Command, response: &IpcResponse) {
         } => {
             println!(
                 "Mic: {}",
-                if *mic_up { "Muted (UP)" } else { "Active (DOWN)" }
+                if *mic_up {
+                    "Muted (UP)"
+                } else {
+                    "Active (DOWN)"
+                }
             );
             println!("Battery: {}% ({})", battery_percent, battery_status);
             println!("Boost: +{} dB", boost_db);
             println!(
                 "Status: {}",
-                if *connected { "Connected" } else { "Disconnected" }
+                if *connected {
+                    "Connected"
+                } else {
+                    "Disconnected"
+                }
             );
         }
-        IpcResponse::Ok => {
-            match command {
-                Command::Boost { db } => println!("Boost set to +{} dB", db),
-                Command::Stop => println!("Instance stopped"),
-                _ => println!("OK"),
-            }
-        }
+        IpcResponse::Ok => match command {
+            Command::Boost { db } => println!("Boost set to +{} dB", db),
+            Command::Stop => println!("Instance stopped"),
+            _ => println!("OK"),
+        },
         IpcResponse::Error(msg) => {
             eprintln!("Error: {}", msg);
             std::process::exit(1);

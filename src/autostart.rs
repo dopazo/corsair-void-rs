@@ -59,4 +59,3 @@ pub fn set_auto_start(enabled: bool) -> Result<(), Box<dyn std::error::Error>> {
     }
     Ok(())
 }
-

@@ -184,7 +184,11 @@ impl fmt::Display for HeadsetStatus {
         write!(
             f,
             "Mic: {} | Battery: {}% ({}) | {}",
-            if self.mic_up { "Muted (UP)" } else { "Active (DOWN)" },
+            if self.mic_up {
+                "Muted (UP)"
+            } else {
+                "Active (DOWN)"
+            },
             self.battery_percent,
             self.battery_status,
             self.connection,

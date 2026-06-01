@@ -7,9 +7,8 @@ use windows::core::PCWSTR;
 use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::Media::Audio::{
-    eRender, IAudioCaptureClient, IAudioClient, IAudioRenderClient,
-    IMMDeviceEnumerator, MMDeviceEnumerator, AUDCLNT_BUFFERFLAGS_SILENT,
-    AUDCLNT_SHAREMODE_SHARED, DEVICE_STATE_ACTIVE,
+    eRender, IAudioCaptureClient, IAudioClient, IAudioRenderClient, IMMDeviceEnumerator,
+    MMDeviceEnumerator, AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_SHAREMODE_SHARED, DEVICE_STATE_ACTIVE,
 };
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CLSCTX_ALL, COINIT_MULTITHREADED, STGM_READ,
@@ -43,7 +42,9 @@ fn get_device_id(device: &windows::Win32::Media::Audio::IMMDevice) -> Result<Str
         let id_pwstr = device
             .GetId()
             .map_err(|e| AudioError::ApiError(format!("GetId: {}", e)))?;
-        let id = id_pwstr.to_string().map_err(|e| AudioError::ApiError(format!("PWSTR to string: {}", e)))?;
+        let id = id_pwstr
+            .to_string()
+            .map_err(|e| AudioError::ApiError(format!("PWSTR to string: {}", e)))?;
         windows::Win32::System::Com::CoTaskMemFree(Some(id_pwstr.0 as *const _));
         Ok(id)
     }
@@ -64,8 +65,16 @@ impl BoostEngine {
         }
     }
 
+    /// Poison-tolerant lock. The inner state holds only `Option`/`u8`/`Arc`
+    /// fields with no invariant a panic could corrupt, so recovering the guard
+    /// from a poisoned mutex is safe and avoids cascading panics across the
+    /// main tray thread and `Drop`.
+    fn lock(&self) -> std::sync::MutexGuard<'_, BoostEngineInner> {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     pub fn detect_virtual_cable(&self) {
-        let inner = &mut *self.inner.lock().unwrap();
+        let inner = &mut *self.lock();
         inner.render_device_id = None;
         inner.render_device_name = None;
 
@@ -88,58 +97,86 @@ impl BoostEngine {
         match get_device_id(device) {
             Ok(id) => {
                 debug!("Capture device ID: {}", id);
-                self.inner.lock().unwrap().capture_device_id = Some(id);
+                self.lock().capture_device_id = Some(id);
             }
             Err(e) => warn!("Failed to get capture device ID: {}", e),
         }
     }
 
     pub fn virtual_cable_available(&self) -> bool {
-        self.inner.lock().unwrap().render_device_id.is_some()
+        self.lock().render_device_id.is_some()
     }
 
     pub fn set_boost_db(&self, db: u8) -> Result<(), AudioError> {
-        let inner = &mut *self.inner.lock().unwrap();
-
         let gain_factor = db_to_linear(db);
-        inner.current_db = db;
 
-        // If thread is already running, a live atomic update is sufficient.
-        // inner.gain always points at the *current* generation's gain Arc.
-        if inner.thread_handle.is_some() {
-            inner.gain.store(f32::to_bits(gain_factor), Ordering::SeqCst);
-            debug!("Updating boost gain to +{} dB (factor: {:.3})", db, gain_factor);
-            return Ok(());
-        }
+        // Locked phase: reap a dead worker, take the live-update fast path, or
+        // gather the inputs and publish fresh per-generation Arcs for a spawn.
+        // The guard is dropped before we spawn so an OS thread-creation failure
+        // can never poison the mutex (#9).
+        let (capture_id, render_id, gain, stop) = {
+            let inner = &mut *self.lock();
+            inner.current_db = db;
 
-        // Need VB-CABLE to start passthrough
-        let render_id = inner
-            .render_device_id
-            .clone()
-            .ok_or_else(|| AudioError::ApiError(
-                "No virtual audio cable detected. Install VB-CABLE (https://vb-audio.com/Cable/)".into(),
-            ))?;
+            // Reap a worker that self-exited on a WASAPI error (#5) so we re-spawn
+            // instead of reporting success against a dead thread.
+            if inner
+                .thread_handle
+                .as_ref()
+                .is_some_and(|h| h.is_finished())
+            {
+                let _ = inner.thread_handle.take().map(|h| h.join());
+            }
 
-        let capture_id = inner
-            .capture_device_id
-            .clone()
-            .ok_or(AudioError::DeviceNotFound)?;
+            // If the thread is genuinely still running, a live atomic update is
+            // sufficient. inner.gain always points at the current generation's Arc.
+            if inner.thread_handle.is_some() {
+                inner
+                    .gain
+                    .store(f32::to_bits(gain_factor), Ordering::SeqCst);
+                debug!(
+                    "Updating boost gain to +{} dB (factor: {:.3})",
+                    db, gain_factor
+                );
+                return Ok(());
+            }
+
+            // Need VB-CABLE to start passthrough
+            let render_id = inner
+                .render_device_id
+                .clone()
+                .ok_or_else(|| AudioError::ApiError(
+                    "No virtual audio cable detected. Install VB-CABLE (https://vb-audio.com/Cable/)".into(),
+                ))?;
+
+            let capture_id = inner
+                .capture_device_id
+                .clone()
+                .ok_or(AudioError::DeviceNotFound)?;
+
+            // Each generation gets its OWN gain + stop Arcs so a worker abandoned by
+            // a prior stop() can never have its stop signal clobbered here, and two
+            // generations can never fight over the same gain/stop state on reconnect.
+            let gain = Arc::new(AtomicU32::new(f32::to_bits(gain_factor)));
+            let stop = Arc::new(AtomicBool::new(false));
+            inner.gain = gain.clone();
+            inner.stop = stop.clone();
+            (capture_id, render_id, gain, stop)
+        }; // guard dropped here
 
         // Spawn the boost thread — it does ALL WASAPI init in its own MTA apartment.
-        // Each generation gets its OWN gain + stop Arcs so a worker abandoned by a
-        // prior stop() can never have its stop signal clobbered here, and two
-        // generations can never fight over the same gain/stop state on reconnect.
-        info!("Starting boost engine: +{} dB (factor: {:.3})", db, gain_factor);
-        let gain = Arc::new(AtomicU32::new(f32::to_bits(gain_factor)));
-        let stop = Arc::new(AtomicBool::new(false));
-        inner.gain = gain.clone();
-        inner.stop = stop.clone();
+        // Use Builder::spawn so an OS thread-creation failure returns an error
+        // instead of panicking (and, with the guard dropped, never poisons the mutex).
+        info!(
+            "Starting boost engine: +{} dB (factor: {:.3})",
+            db, gain_factor
+        );
+        let handle = thread::Builder::new()
+            .name("boost-passthrough".into())
+            .spawn(move || passthrough_thread(capture_id, render_id, gain, stop))
+            .map_err(|e| AudioError::ApiError(format!("spawn boost thread: {}", e)))?;
 
-        let handle = thread::spawn(move || {
-            passthrough_thread(capture_id, render_id, gain, stop);
-        });
-
-        inner.thread_handle = Some(handle);
+        self.lock().thread_handle = Some(handle);
 
         Ok(())
     }
@@ -149,7 +186,7 @@ impl BoostEngine {
     /// performed on a detached thread so the caller (main UI thread) never blocks.
     pub fn stop(&self) {
         let handle = {
-            let inner = &mut *self.inner.lock().unwrap();
+            let inner = &mut *self.lock();
             if inner.thread_handle.is_none() {
                 return;
             }
@@ -183,7 +220,7 @@ impl BoostEngine {
     }
 
     pub fn get_boost_db(&self) -> u8 {
-        self.inner.lock().unwrap().current_db
+        self.lock().current_db
     }
 }
 
@@ -269,7 +306,10 @@ fn passthrough_thread_inner(
             CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
                 .map_err(|e| AudioError::ApiError(format!("CoCreateInstance: {}", e)))?;
 
-        let capture_id_wide: Vec<u16> = capture_id.encode_utf16().chain(std::iter::once(0)).collect();
+        let capture_id_wide: Vec<u16> = capture_id
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
         let capture_device = enumerator
             .GetDevice(PCWSTR(capture_id_wide.as_ptr()))
             .map_err(|e| AudioError::ApiError(format!("GetDevice capture: {}", e)))?;
@@ -299,7 +339,8 @@ fn passthrough_thread_inner(
             .Initialize(
                 AUDCLNT_SHAREMODE_SHARED,
                 windows::Win32::Media::Audio::AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
-                0, 0,
+                0,
+                0,
                 capture_format_ptr,
                 None,
             )
@@ -330,7 +371,8 @@ fn passthrough_thread_inner(
             .Initialize(
                 AUDCLNT_SHAREMODE_SHARED,
                 windows::Win32::Media::Audio::AUDCLNT_STREAMFLAGS_NOPERSIST,
-                0, 0,
+                0,
+                0,
                 render_format_ptr,
                 None,
             )
@@ -400,9 +442,9 @@ fn passthrough_thread_inner(
                         std::slice::from_raw_parts(f32_ptr, sample_count).to_vec()
                     };
 
-                    capture_capture
-                        .ReleaseBuffer(num_frames)
-                        .map_err(|e| AudioError::ApiError(format!("ReleaseBuffer capture: {}", e)))?;
+                    capture_capture.ReleaseBuffer(num_frames).map_err(|e| {
+                        AudioError::ApiError(format!("ReleaseBuffer capture: {}", e))
+                    })?;
 
                     let output_samples = process_audio(
                         &capture_samples,
@@ -421,9 +463,12 @@ fn passthrough_thread_inner(
                     let frames_to_write = output_frames.min(available);
 
                     if frames_to_write > 0 {
-                        let render_buf = render_render
-                            .GetBuffer(frames_to_write as u32)
-                            .map_err(|e| AudioError::ApiError(format!("GetBuffer render: {}", e)))?;
+                        let render_buf =
+                            render_render
+                                .GetBuffer(frames_to_write as u32)
+                                .map_err(|e| {
+                                    AudioError::ApiError(format!("GetBuffer render: {}", e))
+                                })?;
 
                         let dest = std::slice::from_raw_parts_mut(
                             render_buf as *mut f32,
@@ -433,7 +478,9 @@ fn passthrough_thread_inner(
 
                         render_render
                             .ReleaseBuffer(frames_to_write as u32, 0)
-                            .map_err(|e| AudioError::ApiError(format!("ReleaseBuffer render: {}", e)))?;
+                            .map_err(|e| {
+                                AudioError::ApiError(format!("ReleaseBuffer render: {}", e))
+                            })?;
                     }
                 } else {
                     capture_capture
@@ -462,10 +509,7 @@ fn process_audio(
     need_resample: bool,
     sample_rate_ratio: f64,
 ) -> Vec<f32> {
-    let amplified: Vec<f32> = input
-        .iter()
-        .map(|&s| (s * gain).clamp(-1.0, 1.0))
-        .collect();
+    let amplified: Vec<f32> = input.iter().map(|&s| (s * gain).clamp(-1.0, 1.0)).collect();
 
     let channel_converted = if in_channels == out_channels {
         amplified

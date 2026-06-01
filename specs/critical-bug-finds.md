@@ -1,6 +1,6 @@
 # Critical Bug Findings — corsair-void-rs
 
-> **Status:** Open — to be fixed in future work.
+> **Status:** In progress — boost-engine concurrency cluster (#1, #5, #9) and Linux HIGH-severity bugs (#2, #3, #4) fixed; remainder open. See the `Done` column below.
 > **Generated:** 2026-05-30
 > **Scope reviewed:** all source under `src/` (~3,200 LOC, 18 files) at commit `f863b1a` (branch `main`).
 > **How this was produced:** Multi-agent adversarial review. 9 finders (5 module-scoped: device/audio/ipc/tray/core; 4 cross-cutting: concurrency, memory-safety/FFI/arithmetic, HID-protocol correctness, error-handling/resource-leaks) → 29 raw findings → 3 verification rounds, each finding cross-examined by two independent adversarial verifiers (one read the real code to prove it could **not** trigger; one tried to deflate severity), with a completeness critic re-probing coverage gaps between rounds → **49 confirmed real findings → synthesized to 18 distinct bugs** below.
@@ -26,26 +26,26 @@ Most issues degrade gracefully or are gated behind optional features (mic boost 
 
 ## Quick reference
 
-| # | Severity | Bug | Location | Platform / gating |
-|---|----------|-----|----------|-------------------|
-| 1 | HIGH | Shared stop `AtomicBool` reused across boost-thread generations | `src/audio/boost.rs:131` | Windows; `mic_boost_db>0` + VB-CABLE |
-| 2 | HIGH | Linux sysfs kernel-driver backend never dispatched | `src/main.rs:125` | Linux; kernel 6.13+ with `hid-corsair-void` bound |
-| 3 | HIGH | Tray UI thread can hang forever in synchronous PulseAudio calls | `src/audio/linux.rs:117` | Linux; wedged PulseAudio/PipeWire |
-| 4 | HIGH | Linux mic boost hardcodes 2-channel `ChannelVolumes`, silently fails | `src/audio/linux.rs:56` | Linux; mic boost |
-| 5 | MEDIUM | Self-exiting boost thread never reaped → boost silently disabled | `src/audio/boost.rs:109` | Windows; mic boost |
-| 6 | MEDIUM | IPC `Stop` handler `process::exit(0)` before responding → CLI reports failure | `src/tray/mod.rs:465` | All |
-| 7 | MEDIUM | `ConnectNamedPipe` treats `ERROR_PIPE_CONNECTED` as fatal → dropped command | `src/ipc/mod.rs:157` | Windows |
-| 8 | MEDIUM | Unix IPC `accept()` has no read timeout or size bound | `src/ipc/mod.rs:317` | Linux |
-| 9 | MEDIUM | `thread::spawn` panic while holding boost mutex poisons it permanently | `src/audio/boost.rs:133` | Windows; mic boost |
-| 10 | LOW | Windows IPC reuses single pipe HANDLE → response misrouting on stall | `src/main.rs:241` | Windows |
-| 11 | LOW | IPC `BOOST` & config `mic_boost_db` applied unvalidated | `src/ipc/mod.rs:39` | All |
-| 12 | LOW | Unauthenticated IPC accepts `Stop`/`Boost` from any same-user process | `src/ipc/mod.rs:134` | All (`/tmp` fallback cross-user) |
-| 13 | LOW | Windows IPC ignores `ReadFile`/`WriteFile` results; single-read framing | `src/ipc/mod.rs:164` | Windows |
-| 14 | LOW | `GetMixFormat` `WAVEFORMATEX` pointers never freed | `src/audio/boost.rs:277` | Windows; mic boost |
-| 15 | LOW | `generate_tone()` sample-count overflow; volume passed unclamped | `src/sound.rs:57` | All; hand-edited config |
-| 16 | LOW | WASAPI buffers cast to `f32` without validating mix format (latent) | `src/audio/boost.rs:389` | Windows; not triggerable under shared mode |
-| 17 | LOW | `systemctl --user enable --now` blocks the tray event loop | `src/autostart.rs:51` | Linux |
-| 18 | LOW | `request_notifications()` sends malformed `0xCA` packet (harmless no-op) | `src/device/hid.rs:48` | All |
+| # | Done | Severity | Bug | Location | Platform / gating |
+|---|------|----------|-----|----------|-------------------|
+| 1 | [x] | HIGH | Shared stop `AtomicBool` reused across boost-thread generations | `src/audio/boost.rs:131` | Windows; `mic_boost_db>0` + VB-CABLE |
+| 2 | [x] | HIGH | Linux sysfs kernel-driver backend never dispatched | `src/main.rs:125` | Linux; kernel 6.13+ with `hid-corsair-void` bound |
+| 3 | [x] | HIGH | Tray UI thread can hang forever in synchronous PulseAudio calls | `src/audio/linux.rs:117` | Linux; wedged PulseAudio/PipeWire |
+| 4 | [x] | HIGH | Linux mic boost hardcodes 2-channel `ChannelVolumes`, silently fails | `src/audio/linux.rs:56` | Linux; mic boost |
+| 5 | [x] | MEDIUM | Self-exiting boost thread never reaped → boost silently disabled | `src/audio/boost.rs:109` | Windows; mic boost |
+| 6 | [ ] | MEDIUM | IPC `Stop` handler `process::exit(0)` before responding → CLI reports failure | `src/tray/mod.rs:465` | All |
+| 7 | [ ] | MEDIUM | `ConnectNamedPipe` treats `ERROR_PIPE_CONNECTED` as fatal → dropped command | `src/ipc/mod.rs:157` | Windows |
+| 8 | [ ] | MEDIUM | Unix IPC `accept()` has no read timeout or size bound | `src/ipc/mod.rs:317` | Linux |
+| 9 | [x] | MEDIUM | `thread::spawn` panic while holding boost mutex poisons it permanently | `src/audio/boost.rs:133` | Windows; mic boost |
+| 10 | [ ] | LOW | Windows IPC reuses single pipe HANDLE → response misrouting on stall | `src/main.rs:241` | Windows |
+| 11 | [ ] | LOW | IPC `BOOST` & config `mic_boost_db` applied unvalidated | `src/ipc/mod.rs:39` | All |
+| 12 | [ ] | LOW | Unauthenticated IPC accepts `Stop`/`Boost` from any same-user process | `src/ipc/mod.rs:134` | All (`/tmp` fallback cross-user) |
+| 13 | [ ] | LOW | Windows IPC ignores `ReadFile`/`WriteFile` results; single-read framing | `src/ipc/mod.rs:164` | Windows |
+| 14 | [ ] | LOW | `GetMixFormat` `WAVEFORMATEX` pointers never freed | `src/audio/boost.rs:277` | Windows; mic boost |
+| 15 | [ ] | LOW | `generate_tone()` sample-count overflow; volume passed unclamped | `src/sound.rs:57` | All; hand-edited config |
+| 16 | [ ] | LOW | WASAPI buffers cast to `f32` without validating mix format (latent) | `src/audio/boost.rs:389` | Windows; not triggerable under shared mode |
+| 17 | [ ] | LOW | `systemctl --user enable --now` blocks the tray event loop | `src/autostart.rs:51` | Linux |
+| 18 | [ ] | LOW | `request_notifications()` sends malformed `0xCA` packet (harmless no-op) | `src/device/hid.rs:48` | All |
 
 ---
 

@@ -1,8 +1,8 @@
 use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
+use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
 use windows::Win32::Media::Audio::{
     eCapture, IMMDeviceCollection, IMMDeviceEnumerator, MMDeviceEnumerator, DEVICE_STATE_ACTIVE,
 };
-use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CLSCTX_ALL, COINIT_MULTITHREADED, STGM_READ,
 };
@@ -52,8 +52,15 @@ fn main() {
                 .expect("GetMasterVolumeLevelScalar");
 
             println!("Device {}: {}", i, name);
-            println!("  Range: {:.1} dB  to  {:.1} dB  (increment: {:.1} dB)", min_db, max_db, increment_db);
-            println!("  Current: {:.1} dB  ({:.0}%)", current_db, current_scalar * 100.0);
+            println!(
+                "  Range: {:.1} dB  to  {:.1} dB  (increment: {:.1} dB)",
+                min_db, max_db, increment_db
+            );
+            println!(
+                "  Current: {:.1} dB  ({:.0}%)",
+                current_db,
+                current_scalar * 100.0
+            );
 
             // Try setting above 0 dB to see if it works
             if name.to_lowercase().contains("corsair") {
@@ -61,7 +68,10 @@ fn main() {
                 if max_db > 0.0 {
                     println!("  >>> max_db > 0 — boost IS possible via SetMasterVolumeLevel!");
                 } else {
-                    println!("  >>> max_db = {:.1} — no boost above 0 dB available", max_db);
+                    println!(
+                        "  >>> max_db = {:.1} — no boost above 0 dB available",
+                        max_db
+                    );
                 }
             }
             println!();

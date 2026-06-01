@@ -1,8 +1,8 @@
 use hidapi::{HidApi, HidDevice};
 use log::{debug, info, warn};
 
-use super::DeviceError;
 use super::protocol::*;
+use super::{DeviceBackend, DeviceError};
 
 pub struct HidBackend {
     device: HidDevice,
@@ -72,5 +72,19 @@ impl HidBackend {
                 Ok(None)
             }
         }
+    }
+}
+
+impl DeviceBackend for HidBackend {
+    fn request_status(&self) -> Result<(), DeviceError> {
+        HidBackend::request_status(self)
+    }
+
+    fn request_notifications(&self) -> Result<(), DeviceError> {
+        HidBackend::request_notifications(self)
+    }
+
+    fn read_status(&mut self, timeout_ms: i32) -> Result<Option<HeadsetStatus>, DeviceError> {
+        HidBackend::read_status(self, timeout_ms)
     }
 }

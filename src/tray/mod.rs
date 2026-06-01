@@ -1,16 +1,14 @@
 use log::{debug, info, warn};
 use std::sync::mpsc::{Receiver, SyncSender};
 
-use tray_icon::menu::{
-    CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu,
-};
+use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 use tray_icon::{Icon, TrayIconBuilder};
 
 use crate::audio::AudioController;
 use crate::config::Config;
 use crate::device::protocol::{BatteryStatus, LOW_BATTERY_THRESHOLD};
 use crate::device::DeviceEvent;
-use crate::ipc::{IpcMessage, IpcResponse, IpcResponder};
+use crate::ipc::{IpcMessage, IpcResponder, IpcResponse};
 use crate::sound::SoundPlayer;
 
 const ICON_SIZE: u32 = 32;
@@ -177,7 +175,7 @@ fn generate_icon(state: &AppState) -> Icon {
                 let dy = y as f32 - dot_cy as f32;
                 if (dx * dx + dy * dy).sqrt() <= dot_r {
                     let idx = ((y * ICON_SIZE + x) * 4) as usize;
-                    pixels[idx] = 0xFF;     // R
+                    pixels[idx] = 0xFF; // R
                     pixels[idx + 1] = 0x20; // G
                     pixels[idx + 2] = 0x20; // B
                     pixels[idx + 3] = 0xFF; // A
@@ -223,9 +221,10 @@ fn update_menu_text(items: &MenuItems, state: &AppState) {
             BatteryStatus::Full => " (Full)",
             _ => "",
         };
-        items
-            .battery_item
-            .set_text(format!("Battery: {}%{}", state.battery_percent, status_suffix));
+        items.battery_item.set_text(format!(
+            "Battery: {}%{}",
+            state.battery_percent, status_suffix
+        ));
         items.mic_item.set_text(format!(
             "Mic: {}",
             if state.last_mic_up == Some(true) {
@@ -423,10 +422,7 @@ fn handle_low_battery(state: &mut AppState, sound_player: &SoundPlayer) {
         && state.battery_status != BatteryStatus::Charging
         && !state.low_battery_alerted
     {
-        info!(
-            "Low battery alert: {}%",
-            state.battery_percent
-        );
+        info!("Low battery alert: {}%", state.battery_percent);
         sound_player.play_low_battery();
         state.low_battery_alerted = true;
     } else if state.battery_percent > LOW_BATTERY_THRESHOLD

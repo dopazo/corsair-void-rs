@@ -112,8 +112,8 @@ mod platform {
     use windows::core::HSTRING;
     use windows::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
     use windows::Win32::Storage::FileSystem::{
-        CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
-        FILE_SHARE_NONE, OPEN_EXISTING, PIPE_ACCESS_DUPLEX,
+        CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_SHARE_NONE,
+        OPEN_EXISTING, PIPE_ACCESS_DUPLEX,
     };
     use windows::Win32::System::Pipes::{
         ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, WaitNamedPipeW,
@@ -171,11 +171,17 @@ mod platform {
             };
 
             let line = String::from_utf8_lossy(&buf[..total_read]);
-            let msg = IpcMessage::parse(&line)
-                .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid IPC message"))?;
+            let msg = IpcMessage::parse(&line).ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid IPC message")
+            })?;
 
             debug!("IPC received: {:?}", msg);
-            Ok((msg, IpcResponder { handle: self.handle }))
+            Ok((
+                msg,
+                IpcResponder {
+                    handle: self.handle,
+                },
+            ))
         }
 
         /// Disconnect current client and prepare for the next one.
@@ -245,7 +251,9 @@ mod platform {
                     None,
                 )
             }
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::ConnectionRefused, e.to_string()))?;
+            .map_err(|e| {
+                std::io::Error::new(std::io::ErrorKind::ConnectionRefused, e.to_string())
+            })?;
 
             // Write the message
             let data = msg.serialize();
@@ -316,8 +324,9 @@ mod platform {
             let mut line = String::new();
             reader.read_line(&mut line)?;
 
-            let msg = IpcMessage::parse(&line)
-                .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid IPC message"))?;
+            let msg = IpcMessage::parse(&line).ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid IPC message")
+            })?;
 
             debug!("IPC received: {:?}", msg);
             Ok((msg, IpcResponder { stream }))
