@@ -102,11 +102,12 @@ impl BoostEngine {
         let inner = &mut *self.inner.lock().unwrap();
 
         let gain_factor = db_to_linear(db);
-        inner.gain.store(f32::to_bits(gain_factor), Ordering::SeqCst);
         inner.current_db = db;
 
-        // If thread is already running, the atomic update is sufficient
+        // If thread is already running, a live atomic update is sufficient.
+        // inner.gain always points at the *current* generation's gain Arc.
         if inner.thread_handle.is_some() {
+            inner.gain.store(f32::to_bits(gain_factor), Ordering::SeqCst);
             debug!("Updating boost gain to +{} dB (factor: {:.3})", db, gain_factor);
             return Ok(());
         }
@@ -124,11 +125,15 @@ impl BoostEngine {
             .clone()
             .ok_or(AudioError::DeviceNotFound)?;
 
-        // Spawn the boost thread — it does ALL WASAPI init in its own MTA apartment
+        // Spawn the boost thread — it does ALL WASAPI init in its own MTA apartment.
+        // Each generation gets its OWN gain + stop Arcs so a worker abandoned by a
+        // prior stop() can never have its stop signal clobbered here, and two
+        // generations can never fight over the same gain/stop state on reconnect.
         info!("Starting boost engine: +{} dB (factor: {:.3})", db, gain_factor);
-        let gain = inner.gain.clone();
-        let stop = inner.stop.clone();
-        stop.store(false, Ordering::SeqCst);
+        let gain = Arc::new(AtomicU32::new(f32::to_bits(gain_factor)));
+        let stop = Arc::new(AtomicBool::new(false));
+        inner.gain = gain.clone();
+        inner.stop = stop.clone();
 
         let handle = thread::spawn(move || {
             passthrough_thread(capture_id, render_id, gain, stop);
@@ -149,7 +154,12 @@ impl BoostEngine {
                 return;
             }
             info!("Stopping boost engine");
+            // Signal THIS generation's worker, then swap in a fresh flag. The
+            // abandoned worker keeps its own (now permanently-true) stop Arc, and
+            // the next set_boost_db() starts from a clean false flag — so a start
+            // racing this stop can never resurrect the old thread by clearing it.
             inner.stop.store(true, Ordering::SeqCst);
+            inner.stop = Arc::new(AtomicBool::new(false));
             inner.thread_handle.take()
         }; // mutex released here
 
