@@ -44,3 +44,36 @@ pub fn create_audio_controller() -> Box<dyn AudioController> {
         Box::new(linux::LinuxAudioController::new())
     }
 }
+
+/// Supported microphone boost levels in dB. The CLI enforces these via clap, but
+/// IPC messages and the on-disk config are external inputs that must be snapped to
+/// match (see [`normalize_boost_db`]) so state, config, and the tray menu agree.
+pub const BOOST_LEVELS: [u8; 3] = [0, 5, 10];
+
+/// Snap an arbitrary dB value to the nearest supported [`BOOST_LEVELS`] entry.
+pub fn normalize_boost_db(db: u8) -> u8 {
+    BOOST_LEVELS
+        .into_iter()
+        .min_by_key(|&level| level.abs_diff(db))
+        .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_passes_through_valid_levels() {
+        assert_eq!(normalize_boost_db(0), 0);
+        assert_eq!(normalize_boost_db(5), 5);
+        assert_eq!(normalize_boost_db(10), 10);
+    }
+
+    #[test]
+    fn normalize_snaps_to_nearest_level() {
+        assert_eq!(normalize_boost_db(2), 0);
+        assert_eq!(normalize_boost_db(7), 5);
+        assert_eq!(normalize_boost_db(8), 10);
+        assert_eq!(normalize_boost_db(200), 10);
+    }
+}

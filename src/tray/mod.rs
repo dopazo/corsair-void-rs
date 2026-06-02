@@ -4,7 +4,7 @@ use std::sync::mpsc::{Receiver, SyncSender};
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 use tray_icon::{Icon, TrayIconBuilder};
 
-use crate::audio::AudioController;
+use crate::audio::{AudioController, BOOST_LEVELS};
 use crate::config::Config;
 use crate::device::protocol::{BatteryStatus, LOW_BATTERY_THRESHOLD};
 use crate::device::DeviceEvent;
@@ -79,8 +79,6 @@ struct MenuItems {
     auto_start_item: CheckMenuItem,
     quit_item: MenuItem,
 }
-
-const BOOST_LEVELS: [u8; 3] = [0, 5, 10];
 
 fn build_menu(config: &Config, boost_available: bool) -> (Menu, MenuItems) {
     let title = MenuItem::new("Corsair Void", false, None);

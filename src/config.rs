@@ -10,6 +10,12 @@ pub struct Config {
     pub general: GeneralConfig,
 }
 
+/// Bounds for externally-supplied (hand-edited) [`SoundConfig`] values, applied in
+/// [`Config::load`] so tone generation can't overflow or emit a garbage waveform.
+const MAX_TONE_DURATION_MS: u32 = 5_000;
+const MIN_TONE_FREQ_HZ: u32 = 20;
+const MAX_TONE_FREQ_HZ: u32 = 20_000;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SoundConfig {
@@ -18,6 +24,22 @@ pub struct SoundConfig {
     pub freq_high_hz: u32,
     pub freq_low_hz: u32,
     pub duration_ms: u32,
+}
+
+impl SoundConfig {
+    /// Clamp hand-edited values into safe ranges: a non-finite/out-of-range volume
+    /// yields a NaN/garbage tone, and an absurd `duration_ms` overflows the sample
+    /// count in `generate_tone`.
+    fn sanitize(&mut self) {
+        self.volume = if self.volume.is_finite() {
+            self.volume.clamp(0.0, 1.0)
+        } else {
+            Self::default().volume
+        };
+        self.duration_ms = self.duration_ms.min(MAX_TONE_DURATION_MS);
+        self.freq_high_hz = self.freq_high_hz.clamp(MIN_TONE_FREQ_HZ, MAX_TONE_FREQ_HZ);
+        self.freq_low_hz = self.freq_low_hz.clamp(MIN_TONE_FREQ_HZ, MAX_TONE_FREQ_HZ);
+    }
 }
 
 impl Default for SoundConfig {
@@ -55,8 +77,9 @@ impl Config {
         let path = Self::path();
         if path.exists() {
             match std::fs::read_to_string(&path) {
-                Ok(contents) => match toml::from_str(&contents) {
-                    Ok(config) => {
+                Ok(contents) => match toml::from_str::<Self>(&contents) {
+                    Ok(mut config) => {
+                        config.sanitize();
                         info!("Loaded config from {}", path.display());
                         return config;
                     }
@@ -66,6 +89,13 @@ impl Config {
             }
         }
         Self::default()
+    }
+
+    /// Normalize externally-supplied values into valid ranges. Defaults are already
+    /// valid, so this only needs to run on configs parsed from disk.
+    fn sanitize(&mut self) {
+        self.sound.sanitize();
+        self.general.mic_boost_db = crate::audio::normalize_boost_db(self.general.mic_boost_db);
     }
 
     /// Save config to disk, creating directories if needed.
@@ -78,5 +108,28 @@ impl Config {
         std::fs::write(&path, contents)?;
         info!("Saved config to {}", path.display());
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sanitize_clamps_out_of_range_values() {
+        let mut config = Config::default();
+        config.sound.volume = f32::NAN;
+        config.sound.duration_ms = 10_000_000;
+        config.sound.freq_high_hz = 5_000_000;
+        config.sound.freq_low_hz = 0;
+        config.general.mic_boost_db = 200;
+
+        config.sanitize();
+
+        assert_eq!(config.sound.volume, SoundConfig::default().volume);
+        assert!(config.sound.duration_ms <= MAX_TONE_DURATION_MS);
+        assert!(config.sound.freq_high_hz <= MAX_TONE_FREQ_HZ);
+        assert!(config.sound.freq_low_hz >= MIN_TONE_FREQ_HZ);
+        assert_eq!(config.general.mic_boost_db, 10);
     }
 }

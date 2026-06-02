@@ -36,7 +36,13 @@ impl IpcMessage {
         } else if trimmed.eq_ignore_ascii_case("STOP") {
             Some(Self::Stop)
         } else if let Some(rest) = trimmed.strip_prefix("BOOST ") {
-            rest.trim().parse::<u8>().ok().map(Self::Boost)
+            // Snap to a supported level: IPC is an external boundary that, unlike the
+            // clap-gated CLI, can carry any u8. Normalizing here keeps the persisted
+            // config and tray menu consistent with the {0,5,10} contract.
+            rest.trim()
+                .parse::<u8>()
+                .ok()
+                .map(|db| Self::Boost(crate::audio::normalize_boost_db(db)))
         } else {
             None
         }
