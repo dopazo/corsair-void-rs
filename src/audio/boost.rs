@@ -9,6 +9,7 @@ use windows::Win32::Foundation::HANDLE;
 use windows::Win32::Media::Audio::{
     eRender, IAudioCaptureClient, IAudioClient, IAudioRenderClient, IMMDeviceEnumerator,
     MMDeviceEnumerator, AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_SHAREMODE_SHARED, DEVICE_STATE_ACTIVE,
+    WAVEFORMATEX,
 };
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CLSCTX_ALL, COINIT_MULTITHREADED, STGM_READ,
@@ -34,6 +35,22 @@ pub struct BoostEngine {
 
 fn db_to_linear(db: u8) -> f32 {
     10.0_f32.powf(db as f32 / 20.0)
+}
+
+/// RAII wrapper for a `WAVEFORMATEX` returned by `IAudioClient::GetMixFormat`,
+/// which is `CoTaskMemAlloc`'d and caller-owned. Freeing on drop also covers the
+/// `?` early-return paths between `GetMixFormat` and `Initialize`. The pointer
+/// stays valid for the guard's whole scope, so it remains live through `Initialize`.
+struct MixFormat(*mut WAVEFORMATEX);
+
+impl Drop for MixFormat {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe {
+                windows::Win32::System::Com::CoTaskMemFree(Some(self.0 as *const _));
+            }
+        }
+    }
 }
 
 /// Get the device ID string from an IMMDevice.
@@ -324,12 +341,14 @@ fn passthrough_thread_inner(
             .Activate::<IAudioClient>(CLSCTX_ALL, None)
             .map_err(|e| AudioError::ApiError(format!("Activate capture: {}", e)))?;
 
-        let capture_format_ptr = capture_client
-            .GetMixFormat()
-            .map_err(|e| AudioError::ApiError(format!("GetMixFormat capture: {}", e)))?;
+        let capture_format = MixFormat(
+            capture_client
+                .GetMixFormat()
+                .map_err(|e| AudioError::ApiError(format!("GetMixFormat capture: {}", e)))?,
+        );
 
-        let cap_rate = (*capture_format_ptr).nSamplesPerSec;
-        let cap_ch = (*capture_format_ptr).nChannels;
+        let cap_rate = (*capture_format.0).nSamplesPerSec;
+        let cap_ch = (*capture_format.0).nChannels;
         info!("Capture: {} Hz, {} ch", cap_rate, cap_ch);
 
         let capture_event: HANDLE = CreateEventW(None, false, false, None)
@@ -341,7 +360,7 @@ fn passthrough_thread_inner(
                 windows::Win32::Media::Audio::AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
                 0,
                 0,
-                capture_format_ptr,
+                capture_format.0,
                 None,
             )
             .map_err(|e| AudioError::ApiError(format!("Initialize capture: {}", e)))?;
@@ -359,12 +378,14 @@ fn passthrough_thread_inner(
             .Activate::<IAudioClient>(CLSCTX_ALL, None)
             .map_err(|e| AudioError::ApiError(format!("Activate render: {}", e)))?;
 
-        let render_format_ptr = render_client
-            .GetMixFormat()
-            .map_err(|e| AudioError::ApiError(format!("GetMixFormat render: {}", e)))?;
+        let render_format = MixFormat(
+            render_client
+                .GetMixFormat()
+                .map_err(|e| AudioError::ApiError(format!("GetMixFormat render: {}", e)))?,
+        );
 
-        let ren_rate = (*render_format_ptr).nSamplesPerSec;
-        let ren_ch = (*render_format_ptr).nChannels;
+        let ren_rate = (*render_format.0).nSamplesPerSec;
+        let ren_ch = (*render_format.0).nChannels;
         info!("Render: {} Hz, {} ch", ren_rate, ren_ch);
 
         render_client
@@ -373,7 +394,7 @@ fn passthrough_thread_inner(
                 windows::Win32::Media::Audio::AUDCLNT_STREAMFLAGS_NOPERSIST,
                 0,
                 0,
-                render_format_ptr,
+                render_format.0,
                 None,
             )
             .map_err(|e| AudioError::ApiError(format!("Initialize render: {}", e)))?;

@@ -230,7 +230,7 @@ fn hid_polling_loop(tx: mpsc::Sender<DeviceEvent>, hotplug_rx: mpsc::Receiver<()
 const IPC_RESPONSE_TIMEOUT_MS: u64 = 2000;
 
 fn ipc_server_loop(tx: mpsc::Sender<IpcCommand>) {
-    let server = match IpcServer::bind() {
+    let mut server = match IpcServer::bind() {
         Ok(s) => s,
         Err(e) => {
             error!("Failed to start IPC server: {}", e);

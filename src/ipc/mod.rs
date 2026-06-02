@@ -132,11 +132,15 @@ mod platform {
     const PIPE_BUFFER_SIZE: u32 = 1024;
 
     pub struct IpcServer {
-        handle: HANDLE,
+        /// A created-but-not-yet-connected pipe instance, always kept ready so the
+        /// pipe name never disappears between clients. Each accepted connection gets
+        /// its OWN instance handle (moved into its `IpcResponder`), so the listener
+        /// is never shared with — or rebound out from under — an in-flight response.
+        pending: HANDLE,
     }
 
     impl IpcServer {
-        pub fn bind() -> Result<Self, std::io::Error> {
+        fn create_instance() -> Result<HANDLE, std::io::Error> {
             let pipe_name = HSTRING::from(PIPE_NAME);
             let handle = unsafe {
                 CreateNamedPipeW(
@@ -153,66 +157,99 @@ mod platform {
             if handle == INVALID_HANDLE_VALUE {
                 return Err(std::io::Error::last_os_error());
             }
+            Ok(handle)
+        }
 
+        /// Disconnect (discarding any unread data) and close a served instance we are
+        /// abandoning here. The happy path instead moves the handle into the
+        /// `IpcResponder`, which closes it once the response has been written.
+        fn discard(handle: HANDLE) {
+            unsafe {
+                let _ = DisconnectNamedPipe(handle);
+                let _ = CloseHandle(handle);
+            }
+        }
+
+        pub fn bind() -> Result<Self, std::io::Error> {
+            let pending = Self::create_instance()?;
             info!("IPC server listening on {}", PIPE_NAME);
-            Ok(Self { handle })
+            Ok(Self { pending })
         }
 
         /// Block until a client connects, read the message, and return it along with
-        /// a responder that can send back a response.
-        pub fn accept(&self) -> Result<(IpcMessage, IpcResponder), std::io::Error> {
+        /// a responder that owns this connection's pipe instance.
+        pub fn accept(&mut self) -> Result<(IpcMessage, IpcResponder), std::io::Error> {
+            let client = self.pending;
+
             unsafe {
-                if let Err(e) = ConnectNamedPipe(self.handle, None) {
+                if let Err(e) = ConnectNamedPipe(client, None) {
                     let connected = windows::core::HRESULT::from_win32(ERROR_PIPE_CONNECTED.0);
                     let no_data = windows::core::HRESULT::from_win32(ERROR_NO_DATA.0);
                     // ERROR_PIPE_CONNECTED (535): a client connected in the gap before
                     // this call — Win32 documents it as a successful connect.
                     // ERROR_NO_DATA (232): connected-but-already-closing; still safe to
-                    // attempt the read. Anything else is a genuine failure.
+                    // attempt the read. Anything else is a genuine failure — leave
+                    // `pending` in place so the next accept() retries on it.
                     if e.code() != connected && e.code() != no_data {
                         return Err(std::io::Error::other(e.to_string()));
                     }
                 }
             }
 
+            // Stand up the next listener immediately so subsequent clients always
+            // have an instance to connect to and `client` is fully isolated. Only on
+            // success do we hand `client` to the responder; otherwise close it so a
+            // failed accept never strands a connected instance.
+            match Self::create_instance() {
+                Ok(next) => self.pending = next,
+                Err(e) => {
+                    Self::discard(client);
+                    return Err(e);
+                }
+            }
+
             let mut buf = [0u8; 1024];
-            let total_read = unsafe {
-                let mut bytes_read = 0u32;
-                let _ = windows::Win32::Storage::FileSystem::ReadFile(
-                    self.handle,
+            let mut bytes_read = 0u32;
+            let read_result = unsafe {
+                windows::Win32::Storage::FileSystem::ReadFile(
+                    client,
                     Some(&mut buf),
                     Some(&mut bytes_read),
                     None,
-                );
-                bytes_read as usize
+                )
             };
+            if let Err(e) = read_result {
+                // Surface the real OS error rather than letting a failed read look
+                // like an empty (and therefore "invalid") message.
+                Self::discard(client);
+                return Err(std::io::Error::other(e.to_string()));
+            }
 
-            let line = String::from_utf8_lossy(&buf[..total_read]);
-            let msg = IpcMessage::parse(&line).ok_or_else(|| {
-                std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid IPC message")
-            })?;
-
-            debug!("IPC received: {:?}", msg);
-            Ok((
-                msg,
-                IpcResponder {
-                    handle: self.handle,
-                },
-            ))
-        }
-
-        /// Disconnect current client and prepare for the next one.
-        pub fn disconnect_client(&self) {
-            unsafe {
-                let _ = DisconnectNamedPipe(self.handle);
+            let line = String::from_utf8_lossy(&buf[..bytes_read as usize]);
+            match IpcMessage::parse(&line) {
+                Some(msg) => {
+                    debug!("IPC received: {:?}", msg);
+                    Ok((msg, IpcResponder { handle: client }))
+                }
+                None => {
+                    Self::discard(client);
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "Invalid IPC message",
+                    ))
+                }
             }
         }
+
+        /// No-op: each connection's instance is owned and torn down by its
+        /// `IpcResponder`. Kept for cross-platform call-site symmetry.
+        pub fn disconnect_client(&self) {}
     }
 
     impl Drop for IpcServer {
         fn drop(&mut self) {
             unsafe {
-                let _ = CloseHandle(self.handle);
+                let _ = CloseHandle(self.pending);
             }
         }
     }
@@ -251,6 +288,19 @@ mod platform {
             // client already went away.
             unsafe {
                 let _ = windows::Win32::Storage::FileSystem::FlushFileBuffers(self.handle);
+            }
+        }
+    }
+
+    impl Drop for IpcResponder {
+        fn drop(&mut self) {
+            // This responder owns its connection's pipe instance. Close the handle
+            // *without* DisconnectNamedPipe: closing lets the client drain the
+            // buffered response and then see end-of-pipe, whereas disconnecting would
+            // discard any response it hasn't read yet. (The Stop path flushes and
+            // exits before this runs, so its ack is delivered before the process dies.)
+            unsafe {
+                let _ = CloseHandle(self.handle);
             }
         }
     }
@@ -297,22 +347,24 @@ mod platform {
                 .map_err(|e| std::io::Error::other(e.to_string()))?;
             }
 
-            // Read response
+            // Read response. Close the handle regardless, then surface a read
+            // failure instead of parsing an empty buffer as a bogus response.
             let mut buf = [0u8; 1024];
-            let bytes_read;
-            unsafe {
-                let mut read = 0u32;
-                let _ = windows::Win32::Storage::FileSystem::ReadFile(
+            let mut read = 0u32;
+            let read_result = unsafe {
+                windows::Win32::Storage::FileSystem::ReadFile(
                     handle,
                     Some(&mut buf),
                     Some(&mut read),
                     None,
-                );
-                bytes_read = read as usize;
+                )
+            };
+            unsafe {
                 let _ = CloseHandle(handle);
             }
+            read_result.map_err(|e| std::io::Error::other(e.to_string()))?;
 
-            let line = String::from_utf8_lossy(&buf[..bytes_read]);
+            let line = String::from_utf8_lossy(&buf[..read as usize]);
             Ok(IpcResponse::parse(&line))
         }
     }
@@ -322,6 +374,7 @@ mod platform {
 mod platform {
     use super::*;
     use std::io::{BufRead, BufReader, Read, Write};
+    use std::os::unix::fs::PermissionsExt;
     use std::os::unix::net::{UnixListener, UnixStream};
     use std::path::PathBuf;
     use std::time::Duration;
@@ -351,11 +404,17 @@ mod platform {
             // Remove stale socket file
             let _ = std::fs::remove_file(&path);
             let listener = UnixListener::bind(&path)?;
+            // Restrict the socket to its owner so another local user can't send
+            // Stop/Boost. The real exposure is the world-traversable `/tmp` fallback
+            // (used when XDG_RUNTIME_DIR is unset); the XDG runtime dir is already
+            // 0700. On Linux, connecting requires write permission on the socket
+            // file, so 0600 limits connections to the owner.
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
             info!("IPC server listening on {}", path.display());
             Ok(Self { listener })
         }
 
-        pub fn accept(&self) -> Result<(IpcMessage, IpcResponder), std::io::Error> {
+        pub fn accept(&mut self) -> Result<(IpcMessage, IpcResponder), std::io::Error> {
             let (stream, _) = self.listener.accept()?;
             // Bound the read: a stalled client surfaces as WouldBlock/TimedOut (the
             // caller disconnects and continues), and the take() cap stops a

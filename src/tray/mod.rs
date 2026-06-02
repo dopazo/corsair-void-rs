@@ -1,5 +1,5 @@
 use log::{debug, info, warn};
-use std::sync::mpsc::{Receiver, SyncSender};
+use std::sync::mpsc::{channel, Receiver, SyncSender};
 
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 use tray_icon::{Icon, TrayIconBuilder};
@@ -276,6 +276,9 @@ pub fn run_tray(
         .expect("Failed to create tray icon");
 
     let menu_rx = MenuEvent::receiver();
+    // Auto-start toggles run `systemctl` off-thread (Linux), so their success or
+    // failure is reported back here instead of blocking the event loop.
+    let (autostart_tx, autostart_rx) = channel::<crate::autostart::AutoStartOutcome>();
     let mut state = AppState {
         boost_db: config.general.mic_boost_db,
         ..AppState::default()
@@ -396,17 +399,25 @@ pub fn run_tray(
                 }
             }
 
-            // Auto-start toggle
+            // Auto-start toggle. Fire-and-forget: the outcome is applied below when
+            // it arrives on autostart_rx, so a slow systemctl can't freeze the tray.
             if event.id == items.auto_start_item.id() {
                 let enabled = items.auto_start_item.is_checked();
                 debug!("Auto-start toggled: {}", enabled);
-                if let Err(e) = crate::autostart::set_auto_start(enabled) {
-                    warn!("Failed to set auto-start: {}", e);
-                    // Revert checkbox
-                    items.auto_start_item.set_checked(!enabled);
-                } else {
-                    config.general.auto_start = enabled;
+                crate::autostart::set_auto_start(enabled, autostart_tx.clone());
+            }
+        }
+
+        // 5. Apply auto-start outcomes (systemctl runs off-thread on Linux)
+        while let Ok(outcome) = autostart_rx.try_recv() {
+            match outcome.result {
+                Ok(()) => {
+                    config.general.auto_start = outcome.enabled;
                     let _ = config.save();
+                }
+                Err(e) => {
+                    warn!("Failed to set auto-start: {}", e);
+                    items.auto_start_item.set_checked(!outcome.enabled);
                 }
             }
         }
