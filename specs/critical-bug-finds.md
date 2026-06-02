@@ -1,6 +1,6 @@
 # Critical Bug Findings — corsair-void-rs
 
-> **Status:** In progress — boost-engine concurrency cluster (#1, #5, #9) and Linux HIGH-severity bugs (#2, #3, #4) fixed; remainder open. See the `Done` column below.
+> **Status:** In progress — boost-engine concurrency cluster (#1, #5, #9), Linux HIGH-severity bugs (#2, #3, #4), and MEDIUM IPC bugs (#6, #7, #8) fixed; remainder open. See the `Done` column below.
 > **Generated:** 2026-05-30
 > **Scope reviewed:** all source under `src/` (~3,200 LOC, 18 files) at commit `f863b1a` (branch `main`).
 > **How this was produced:** Multi-agent adversarial review. 9 finders (5 module-scoped: device/audio/ipc/tray/core; 4 cross-cutting: concurrency, memory-safety/FFI/arithmetic, HID-protocol correctness, error-handling/resource-leaks) → 29 raw findings → 3 verification rounds, each finding cross-examined by two independent adversarial verifiers (one read the real code to prove it could **not** trigger; one tried to deflate severity), with a completeness critic re-probing coverage gaps between rounds → **49 confirmed real findings → synthesized to 18 distinct bugs** below.
@@ -33,9 +33,9 @@ Most issues degrade gracefully or are gated behind optional features (mic boost 
 | 3 | [x] | HIGH | Tray UI thread can hang forever in synchronous PulseAudio calls | `src/audio/linux.rs:117` | Linux; wedged PulseAudio/PipeWire |
 | 4 | [x] | HIGH | Linux mic boost hardcodes 2-channel `ChannelVolumes`, silently fails | `src/audio/linux.rs:56` | Linux; mic boost |
 | 5 | [x] | MEDIUM | Self-exiting boost thread never reaped → boost silently disabled | `src/audio/boost.rs:109` | Windows; mic boost |
-| 6 | [ ] | MEDIUM | IPC `Stop` handler `process::exit(0)` before responding → CLI reports failure | `src/tray/mod.rs:465` | All |
-| 7 | [ ] | MEDIUM | `ConnectNamedPipe` treats `ERROR_PIPE_CONNECTED` as fatal → dropped command | `src/ipc/mod.rs:157` | Windows |
-| 8 | [ ] | MEDIUM | Unix IPC `accept()` has no read timeout or size bound | `src/ipc/mod.rs:317` | Linux |
+| 6 | [x] | MEDIUM | IPC `Stop` handler `process::exit(0)` before responding → CLI reports failure | `src/tray/mod.rs:465` | All |
+| 7 | [x] | MEDIUM | `ConnectNamedPipe` treats `ERROR_PIPE_CONNECTED` as fatal → dropped command | `src/ipc/mod.rs:157` | Windows |
+| 8 | [x] | MEDIUM | Unix IPC `accept()` has no read timeout or size bound | `src/ipc/mod.rs:317` | Linux |
 | 9 | [x] | MEDIUM | `thread::spawn` panic while holding boost mutex poisons it permanently | `src/audio/boost.rs:133` | Windows; mic boost |
 | 10 | [ ] | LOW | Windows IPC reuses single pipe HANDLE → response misrouting on stall | `src/main.rs:241` | Windows |
 | 11 | [ ] | LOW | IPC `BOOST` & config `mic_boost_db` applied unvalidated | `src/ipc/mod.rs:39` | All |

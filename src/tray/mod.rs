@@ -351,15 +351,25 @@ pub fn run_tray(
 
         // 3. Process IPC commands
         while let Ok(cmd) = ipc_rx.try_recv() {
+            let is_stop = matches!(cmd.message, IpcMessage::Stop);
             let is_mutation = !matches!(cmd.message, IpcMessage::Status);
             let response = handle_ipc_command(&cmd.message, &mut state, &mut *audio, &mut config);
-            if is_mutation {
+            if is_mutation && !is_stop {
                 update_menu_text(&items, &state);
                 for (i, item) in items.boost_items.iter().enumerate() {
                     item.set_checked(BOOST_LEVELS[i] == state.boost_db);
                 }
             }
             let _ = cmd.responder.send(response);
+            if is_stop {
+                // Make sure the client drained the OK before we tear the pipe down,
+                // then stop boost and exit cleanly (mirrors the Quit teardown path).
+                cmd.responder.flush();
+                let _ = cmd.done.send(());
+                audio.stop_boost();
+                info!("Exiting after IPC Stop");
+                std::process::exit(0);
+            }
             let _ = cmd.done.send(());
         }
 
@@ -457,8 +467,10 @@ fn handle_ipc_command(
             IpcResponse::Ok
         }
         IpcMessage::Stop => {
+            // Acknowledge here; the event loop performs ordered teardown and exits
+            // *after* this response is written, so the client sees OK (not EOF).
             info!("Stop requested via IPC");
-            std::process::exit(0);
+            IpcResponse::Ok
         }
     }
 }

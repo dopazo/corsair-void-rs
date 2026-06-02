@@ -110,7 +110,9 @@ mod platform {
     use super::*;
 
     use windows::core::HSTRING;
-    use windows::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
+    use windows::Win32::Foundation::{
+        CloseHandle, ERROR_NO_DATA, ERROR_PIPE_CONNECTED, HANDLE, INVALID_HANDLE_VALUE,
+    };
     use windows::Win32::Storage::FileSystem::{
         CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_SHARE_NONE,
         OPEN_EXISTING, PIPE_ACCESS_DUPLEX,
@@ -154,8 +156,17 @@ mod platform {
         /// a responder that can send back a response.
         pub fn accept(&self) -> Result<(IpcMessage, IpcResponder), std::io::Error> {
             unsafe {
-                ConnectNamedPipe(self.handle, None)
-                    .map_err(|e| std::io::Error::other(e.to_string()))?;
+                if let Err(e) = ConnectNamedPipe(self.handle, None) {
+                    let connected = windows::core::HRESULT::from_win32(ERROR_PIPE_CONNECTED.0);
+                    let no_data = windows::core::HRESULT::from_win32(ERROR_NO_DATA.0);
+                    // ERROR_PIPE_CONNECTED (535): a client connected in the gap before
+                    // this call — Win32 documents it as a successful connect.
+                    // ERROR_NO_DATA (232): connected-but-already-closing; still safe to
+                    // attempt the read. Anything else is a genuine failure.
+                    if e.code() != connected && e.code() != no_data {
+                        return Err(std::io::Error::other(e.to_string()));
+                    }
+                }
             }
 
             let mut buf = [0u8; 1024];
@@ -223,6 +234,18 @@ mod platform {
                 .map_err(|e| std::io::Error::other(e.to_string()))?;
             }
             Ok(())
+        }
+
+        /// Block until the client has drained the pipe, so a response written just
+        /// before the daemon exits (e.g. the `Stop` ack) isn't lost to the close.
+        pub fn flush(&self) {
+            // FlushFileBuffers on the server end does not return until the client
+            // has read all buffered data. Our CLI reads immediately, so this returns
+            // promptly; we ignore the result since a failed flush only means the
+            // client already went away.
+            unsafe {
+                let _ = windows::Win32::Storage::FileSystem::FlushFileBuffers(self.handle);
+            }
         }
     }
 
@@ -292,9 +315,17 @@ mod platform {
 #[cfg(unix)]
 mod platform {
     use super::*;
-    use std::io::{BufRead, BufReader, Write};
+    use std::io::{BufRead, BufReader, Read, Write};
     use std::os::unix::net::{UnixListener, UnixStream};
     use std::path::PathBuf;
+    use std::time::Duration;
+
+    /// Drop a client that stops sending mid-message rather than hanging the single
+    /// serial accept loop forever.
+    const IPC_READ_TIMEOUT: Duration = Duration::from_secs(2);
+    /// Cap the bytes read from a single connection so a newline-free flood can't
+    /// grow the buffer until OOM.
+    const MAX_IPC_LINE: u64 = 1024;
 
     fn socket_path() -> PathBuf {
         if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
@@ -320,7 +351,11 @@ mod platform {
 
         pub fn accept(&self) -> Result<(IpcMessage, IpcResponder), std::io::Error> {
             let (stream, _) = self.listener.accept()?;
-            let mut reader = BufReader::new(stream.try_clone()?);
+            // Bound the read: a stalled client surfaces as WouldBlock/TimedOut (the
+            // caller disconnects and continues), and the take() cap stops a
+            // newline-free flood before it can exhaust memory.
+            stream.set_read_timeout(Some(IPC_READ_TIMEOUT))?;
+            let mut reader = BufReader::new(stream.try_clone()?).take(MAX_IPC_LINE);
             let mut line = String::new();
             reader.read_line(&mut line)?;
 
@@ -351,6 +386,11 @@ mod platform {
         pub fn send(&self, response: IpcResponse) -> Result<(), std::io::Error> {
             (&self.stream).write_all(response.serialize().as_bytes())
         }
+
+        /// No-op on Unix: `write_all` already handed the bytes to the kernel socket
+        /// buffer, which survives our exit until the client reads them. Mirrors the
+        /// Windows responder's `flush()` so the caller is platform-agnostic.
+        pub fn flush(&self) {}
     }
 
     pub struct IpcClient;
@@ -364,7 +404,10 @@ mod platform {
             let mut stream = UnixStream::connect(socket_path())?;
             stream.write_all(msg.serialize().as_bytes())?;
 
-            let mut reader = BufReader::new(stream);
+            // Mirror the server bounds so the CLI can't hang or over-read if the
+            // daemon stalls mid-response.
+            stream.set_read_timeout(Some(IPC_READ_TIMEOUT))?;
+            let mut reader = BufReader::new(stream).take(MAX_IPC_LINE);
             let mut line = String::new();
             reader.read_line(&mut line)?;
             Ok(IpcResponse::parse(&line))
