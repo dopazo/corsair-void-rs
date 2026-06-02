@@ -1,6 +1,7 @@
-// Hide console window when launched from Start Menu / autostart.
-// CLI subcommands still work when run from an existing terminal.
-#![windows_subsystem = "windows"]
+// Hide the console window in release builds (launched from Start Menu / autostart).
+// Debug builds keep the console so the binary prints `RUST_LOG` output and blocks in
+// the foreground for testing. CLI subcommands work either way.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod audio;
 pub mod autostart;
